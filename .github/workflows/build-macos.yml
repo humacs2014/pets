@@ -62,19 +62,24 @@ jobs:
           mkdir dmg_stage
           cp -R "dist/哈士奇桌面宠物.app" dmg_stage/
           ln -s /Applications dmg_stage/Applications
-          hdiutil create -volname "哈士奇桌面宠物" -srcfolder dmg_stage -ov -format UDZO "哈士奇桌面宠物-macOS-arm64.dmg"
+          hdiutil create -volname "哈士奇桌面宠物" -srcfolder dmg_stage -ov -format UDZO "HuskyPet-v27-macOS-arm64.dmg"
 
       - name: Verify DMG
         run: |
-          hdiutil verify "哈士奇桌面宠物-macOS-arm64.dmg"
+          hdiutil verify "HuskyPet-v27-macOS-arm64.dmg"
           ls -lh *.dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: husky-macos-dmg
-          path: "哈士奇桌面宠物-macOS-arm64.dmg"
+          path: "HuskyPet-v27-macOS-arm64.dmg"
           retention-days: 30
+
+      - name: Cleanup previous release（重建干净的Release）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete v27-macos-arm64 --yes --cleanup-tag 2>/dev/null || true
 
       - name: Create Release（公开下载链接，朋友无需登录即可下载）
         uses: softprops/action-gh-release@v2
@@ -85,4 +90,4 @@ jobs:
             macOS版安装包，适用于Apple Silicon（M1/M2/M3/M4）MacBook。
             首次打开：右键点击应用→选择"打开"→再点"打开"。
             若提示"已损坏"：终端执行 xattr -cr /Applications/哈士奇桌面宠物.app
-          files: "哈士奇桌面宠物-macOS-arm64.dmg"
+          files: "HuskyPet-v27-macOS-arm64.dmg"
