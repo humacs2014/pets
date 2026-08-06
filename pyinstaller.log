@@ -1,0 +1,95 @@
+40 INFO: PyInstaller: 6.11.1, contrib hooks: 2026.6
+40 INFO: Python: 3.11.9
+61 INFO: Platform: macOS-15.7.7-arm64-arm-64bit
+62 INFO: Python environment: /Library/Frameworks/Python.framework/Versions/3.11
+65 INFO: Removing temporary files and cleaning cache in /Users/runner/Library/Application Support/pyinstaller
+66 INFO: Module search paths (PYTHONPATH):
+['/Users/runner/work/pets/pets',
+ '/Library/Frameworks/Python.framework/Versions/3.11/lib/python311.zip',
+ '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11',
+ '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/lib-dynload',
+ '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages',
+ '/Users/runner/work/pets/pets']
+225 INFO: Appending 'datas' from .spec
+228 INFO: checking Analysis
+228 INFO: Building Analysis because Analysis-00.toc is non existent
+228 INFO: Running Analysis Analysis-00.toc
+228 INFO: Target bytecode optimization level: 0
+228 INFO: Initializing module dependency graph...
+230 INFO: Initializing module graph hook caches...
+234 INFO: Analyzing base_library.zip ...
+839 INFO: Processing standard module hook 'hook-heapq.py' from '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/hooks'
+915 INFO: Processing standard module hook 'hook-encodings.py' from '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/hooks'
+2028 INFO: Processing standard module hook 'hook-pickle.py' from '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/hooks'
+3058 INFO: Caching module dependency graph...
+3107 INFO: Looking for Python shared library...
+3109 INFO: Using Python shared library: /Library/Frameworks/Python.framework/Versions/3.11/Python
+3109 INFO: Analyzing /Users/runner/work/pets/pets/husky_pet_v7.py
+3141 INFO: Processing standard module hook 'hook-PyQt5.QtWidgets.py' from '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/hooks'
+3306 INFO: Processing standard module hook 'hook-PyQt5.py' from '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/hooks'
+3307 INFO: Processing standard module hook 'hook-PyQt5.QtCore.py' from '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/hooks'
+3356 INFO: Processing standard module hook 'hook-PyQt5.QtGui.py' from '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/hooks'
+3486 INFO: Processing module hooks (post-graph stage)...
+3487 WARNING: Hidden import "sip" not found!
+3538 INFO: Performing binary vs. data reclassification (494 entries)
+3595 INFO: Looking for ctypes DLLs
+3618 INFO: Analyzing run-time hooks ...
+3619 INFO: Including run-time hook 'pyi_rth_inspect.py' from '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/hooks/rthooks'
+3620 INFO: Including run-time hook 'pyi_rth_pyqt5.py' from '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/hooks/rthooks'
+3621 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/hooks/pre_find_module_path'
+3621 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/hooks'
+3623 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/hooks/rthooks'
+3631 INFO: Looking for dynamic libraries
+4060 INFO: Warnings written to /Users/runner/work/pets/pets/build/husky_mac/warn-husky_mac.txt
+4066 INFO: Graph cross-reference written to /Users/runner/work/pets/pets/build/husky_mac/xref-husky_mac.html
+4178 INFO: checking PYZ
+4178 INFO: Building PYZ because PYZ-00.toc is non existent
+4178 INFO: Building PYZ (ZlibArchive) /Users/runner/work/pets/pets/build/husky_mac/PYZ-00.pyz
+4332 INFO: Building PYZ (ZlibArchive) /Users/runner/work/pets/pets/build/husky_mac/PYZ-00.pyz completed successfully.
+4333 INFO: EXE target arch: arm64
+4333 INFO: Code signing identity: None
+4336 INFO: checking PKG
+4336 INFO: Building PKG because PKG-00.toc is non existent
+4336 INFO: Building PKG (CArchive) 哈士奇桌面宠物.pkg
+4378 INFO: Building PKG (CArchive) 哈士奇桌面宠物.pkg completed successfully.
+4379 INFO: Bootloader /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/bootloader/Darwin-64bit/runw
+4379 INFO: checking EXE
+4379 INFO: Building EXE because EXE-00.toc is non existent
+4379 INFO: Building EXE from EXE-00.toc
+4379 INFO: Copying bootloader EXE to /Users/runner/work/pets/pets/build/husky_mac/哈士奇桌面宠物
+4380 INFO: Converting EXE to target arch (arm64)
+5652 INFO: Removing signature(s) from EXE
+5670 INFO: Appending PKG archive to EXE
+5671 INFO: Fixing EXE headers for code signing
+5677 INFO: Rewriting the executable's macOS SDK version (13.1.0) to match the SDK version of the Python library (12.1.0) in order to avoid inconsistent behavior and potential UI issues in the frozen application.
+5678 INFO: Re-signing the EXE
+5696 INFO: Building EXE from EXE-00.toc completed successfully.
+5699 INFO: checking BUNDLE
+5699 INFO: Building BUNDLE because BUNDLE-00.toc is non existent
+5699 INFO: Building BUNDLE BUNDLE-00.toc
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/__main__.py", line 321, in <module>
+    run()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/__main__.py", line 215, in run
+    run_build(pyi_config, spec_file, **vars(args))
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/__main__.py", line 70, in run_build
+    PyInstaller.building.build_main.main(pyi_config, spec_file, **kwargs)
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/building/build_main.py", line 1252, in main
+    build(specfile, distpath, workpath, clean_build)
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/building/build_main.py", line 1192, in build
+    exec(code, spec_namespace)
+  File "husky_mac.spec", line 35, in <module>
+    coll = BUNDLE(
+           ^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/building/osx.py", line 124, in __init__
+    self.__postinit__()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/building/datastruct.py", line 184, in __postinit__
+    self.assemble()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/building/osx.py", line 555, in assemble
+    self.icon = normalize_icon_type(self.icon, ("icns",), "icns", CONF["workpath"])
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/PyInstaller/building/icon.py", line 34, in normalize_icon_type
+    raise FileNotFoundError(f"Icon input file {icon_path} not found")
+FileNotFoundError: Icon input file /Users/runner/work/pets/pets/husky_icon.icns not found
