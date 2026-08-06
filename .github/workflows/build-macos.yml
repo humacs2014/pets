@@ -41,7 +41,20 @@ jobs:
           iconutil -c icns app.iconset -o app.icns
 
       - name: Build .app bundle
-        run: pyinstaller husky_mac.spec --noconfirm --clean
+        run: |
+          set -o pipefail
+          python -m PyInstaller --version
+          python -m PyInstaller husky_mac.spec --noconfirm --clean 2>&1 | tee pyinstaller.log
+
+      - name: Push build log on failure（失败时日志推到ci-logs分支，公开可读）
+        if: failure()
+        run: |
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git checkout -B ci-logs
+          git add -f pyinstaller.log
+          git commit -m "CI: build failure log" || true
+          git push -f origin ci-logs
 
       - name: Package DMG
         run: |
