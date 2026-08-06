@@ -37,7 +37,7 @@ coll = BUNDLE(
     a.binaries,
     a.datas,
     name='哈士奇桌面宠物.app',
-    icon='husky_icon.icns',
+    icon='app.icns',
     bundle_identifier='com.humac.huskydesktoppet',
     info_plist={
         'CFBundleDisplayName': '哈士奇桌面宠物',
