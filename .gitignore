@@ -1,0 +1,28 @@
+# 临时脚本和产物
+_*.py
+_*.png
+_*.jpg
+__*/
+*.pyc
+__pycache__/
+build/
+dist/
+*.spec
+!husky_mac.spec
+
+# 备份目录
+assets_backup*/
+assets_bath*/
+assets_old_backup/
+assets_run_v2*/
+assets_v*/
+assets_walk_pre*/
+assets_ai_raw/
+assets3d/
+raw_3d/
+agnes_test/
+v19dance_win/
+
+# 其他
+*.log
+*.exe
