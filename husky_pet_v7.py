@@ -59,7 +59,7 @@ ANIMS = {
     'run':       ('run',       15, 54,  True,  0),
     'eat':       ('eat',       34, 96,  True,  0),
     'bark':      ('bark',      34, 70,  True,  0),
-    'sleep':     ('sleep',     37, 110, True,  26),
+    'sleep':     ('sleep',     48, 110, True,  39),
     'sit':       ('sit',       41, 65,  True,  14),
     'lick':      ('lick',      32, 74,  True,  0),
     'happy':     ('happy',     44, 59,  False, 0),
@@ -951,7 +951,7 @@ class PetWindow(QWidget):
 
         # ── 睡觉 ──
         if st == 'sleep':
-            if self.energy >= 95 or st_time > 40:
+            if (st_time > 10 and self.energy >= 95) or st_time > 40:
                 self.set_state('stretch', duration=4.9)
                 self.say('睡醒了!')
             return
