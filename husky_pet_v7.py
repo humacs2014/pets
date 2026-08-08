@@ -23,6 +23,7 @@ import math
 import random
 import time
 import os
+import json
 
 from PyQt5.QtWidgets import QApplication, QWidget, QMenu
 from PyQt5.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QRect
@@ -49,33 +50,28 @@ def asset_path():
 # ═══════════════════════════════════════════════════════════
 ANIMS = {
     # state: (prefix, frame_count, frame_ms, loop, intro_frames)
-    # v8: Agnes AI视频抽帧+乒乓烘焙帧序列。
-    #   intro_frames=进入姿态帧数（坐下/躺下），只播一次后循环主体段；
-    #   往复动作已烘焙正放+倒放（pingpong），正向循环即无缝。
-    'idle':      ('idle',      26, 164, True,  0),
-    # v22: walk/run恢复为你认可的v13帧(v11帧walk/run 8帧)——v21误用了v17备份帧
-    #      (14/10帧gallop素材+rig钟摆)导致步态观感与认可版不符。
-    #      v13字节码实测: ANIMS walk=11帧/run=8帧, LEG_RIG=空字典(纯帧播放无rig)。
-    #      帧数必须与assets实际文件数一致，否则frame_idx%count与实际帧数错位→节奏性卡顿
-    'walk':      ('walk',      11, 110, True,  0),
-    'run':       ('run',       8,  100, True,  0),
-    'eat':       ('eat',       20, 164, True,  0),
-    'bark':      ('bark',      20, 120, True,  0),
-    'sleep':     ('sleep',     48, 110, True,  39),
-    'sit':       ('sit',       24, 110, True,  8),
-    'lick':      ('lick',      20, 120, True,  0),
-    # v21c: happy按v20视频f61-f120重抽26帧(405px站立高+70px跳幅,与其他状态一致),
-    #       lift封顶由窗口底边烘焙保证,跳峰不裁切
-    'happy':     ('happy',     26, 100, False, 0),
-    'roll':      ('roll',      26, 110, True,  0),
-    'dance':     ('dance',     22, 110, True,  0),
+    # v25(P4补帧): 帧数较v8提升1.7x~2x，消除掉帧感。frame_ms按比例缩短以保持
+    #   总时长不变（引擎按 elapsed/frame_ms 推进帧，帧数翻倍则帧时长减半）。
+    #   intro_frames同样按比例放大；帧间插值由build_reframe.py离线生成。
+    #   sleep/stretch为定制几何重建序列，保持49/37帧不动（已足够平滑）。
+    'idle':      ('idle',      44, 96,  True,  0),
+    'walk':      ('walk',      20, 60,  True,  0),
+    'run':       ('run',       15, 54,  True,  0),
+    'eat':       ('eat',       34, 96,  True,  0),
+    'bark':      ('bark',      34, 70,  True,  0),
+    'sleep':     ('sleep',     37, 110, True,  26),
+    'sit':       ('sit',       41, 65,  True,  14),
+    'lick':      ('lick',      32, 74,  True,  0),
+    'happy':     ('happy',     44, 59,  False, 0),
+    'roll':      ('roll',      44, 65,  True,  0),
+    'dance':     ('dance',     37, 65,  True,  0),
     'stretch':   ('stretch',   49, 100, False, 0),
-    'beg':       ('beg',       20, 120, True,  0),
-    'bath':      ('bath',      20, 120, True,  0),
-    'surprised': ('surprised', 17, 110, False, 0),
-    'play_dead': ('play_dead', 26, 110, False, 0),
-    'potty_run': ('run',       8,  100, True,  0),  # v22: 复用run帧，帧数必须与run一致(8)
-    'potty':     ('sit',       24, 110, True,  8),
+    'beg':       ('beg',       30, 79,  True,  0),
+    'bath':      ('bath',      34, 70,  True,  0),
+    'surprised': ('surprised', 29, 65,  False, 0),
+    'play_dead': ('play_dead', 44, 65,  False, 0),
+    'potty_run': ('run',       15, 54,  True,  0),  # 复用run帧，帧数必须与run一致
+    'potty':     ('sit',       41, 65,  True,  14),
 }
 
 # 朝向左的状态（素材本身朝左，向右移动时需镜像）
@@ -84,6 +80,56 @@ LEFT_FACING = {'walk', 'run'}
 CANVAS = 320          # 窗口尺寸（320>250+挤压/旋转溢出余量，杜绝变换裁切）
 DRAW_SIZE = 250       # 精灵绘制尺寸
 GROUND_PAD = 14       # 脚底留白
+
+# ═══════════════════════════════════════════════════════════
+#  v25 (P9): 全局缩放 — 菜单"大小"可放大/缩小/重置，比例持久化
+# ═══════════════════════════════════════════════════════════
+ZOOM_DEFAULT = 1.0
+ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 0.5, 2.5, 0.25
+
+
+def zoom_cfg_path():
+    """缩放配置文件位置（打包后在exe同目录）"""
+    if getattr(sys, 'frozen', False):
+        return os.path.join(os.path.dirname(sys.executable), 'zoom_config.json')
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'zoom_config.json')
+
+
+def load_zoom():
+    try:
+        with open(zoom_cfg_path(), 'r', encoding='utf-8') as f:
+            return max(ZOOM_MIN, min(ZOOM_MAX, float(json.load(f).get('zoom', ZOOM_DEFAULT))))
+    except Exception:
+        return ZOOM_DEFAULT
+
+
+def save_zoom(zoom):
+    try:
+        with open(zoom_cfg_path(), 'w', encoding='utf-8') as f:
+            json.dump({'zoom': zoom}, f)
+    except Exception:
+        pass
+
+
+# ═══════════════════════════════════════════════════════════
+#  v25 (P3): 菜单样式 — 配合 WA_TranslucentBackground 消除四角白角
+# ═══════════════════════════════════════════════════════════
+MENU_QSS = """
+    QMenu { background:#2b2b3a; color:#e8e8f0; border:1px solid #45455c;
+            border-radius:8px; padding:6px; font-size:13px;
+            font-family:'%s'; }
+    QMenu::item { padding:8px 26px; border-radius:5px; }
+    QMenu::item:selected { background:#4a4a6e; }
+    QMenu::separator { height:1px; background:#45455c; margin:4px 10px; }
+""" % _UI_FONT
+
+
+def make_menu(parent, title=None):
+    """(P3) 统一菜单工厂：弹窗自身透明 + 圆角样式 → 圆角外真正透明，无白角"""
+    m = QMenu(title, parent) if title else QMenu(parent)
+    m.setAttribute(Qt.WA_TranslucentBackground)
+    m.setStyleSheet(MENU_QSS)
+    return m
 
 # ═══════════════════════════════════════════════════════════
 #  v24: LEG_RIG 清空 —— 逐帧视觉判定证明:
@@ -122,6 +168,10 @@ class SpriteBank:
 
     def load(self):
         base = asset_path()
+        # v25(P9): 按 DRAW_SIZE*zoom 高分辨率加载，配合paintEvent顶层scale(zoom)，
+        # 设备空间1:1重采样——任意缩放下都保持锐利。
+        # （LEG_RIG为空、rig为死代码，几何对齐不受尺寸影响）
+        draw = getattr(self, 'draw_size', DRAW_SIZE)
         for state, (prefix, count, _, _, _i) in ANIMS.items():
             imgs, imgs_m = [], []
             for i in range(count):
@@ -131,7 +181,7 @@ class SpriteBank:
                     continue
                 img = img.convertToFormat(QImage.Format_ARGB32)
                 # 缩放到目标尺寸（双线性平滑）
-                img = img.scaled(DRAW_SIZE, DRAW_SIZE,
+                img = img.scaled(draw, draw,
                                   Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 imgs.append(img)
                 # 预生成镜像版本
@@ -238,21 +288,21 @@ class SpriteBank:
                     cnt += 1
         return sum_x / cnt if cnt else None
 
-    @staticmethod
-    def _center_frames(imgs):
+    def _center_frames(self, imgs):
         """v11 帧水平居中：整序列共享偏移，根治'超出边框'。
         根因：walk帧内容贴素材左缘(左边距=0)、质心偏-44px，镜像后狗头顶窗口边缘；
         且帧间质心漂移导致左右晃动。用全序列平均质心做统一平移——
-        既让狗在窗口内居中，又消除帧间水平抖动。"""
+        既让狗在窗口内居中，又消除帧间水平抖动。v25: 按当前缩放尺寸绘制。"""
+        draw = self.draw_size
         cxs = [c for c in (SpriteBank._content_centroid_x(im) for im in imgs) if c is not None]
         if not cxs:
             return imgs
-        shift = int(round(DRAW_SIZE / 2 - sum(cxs) / len(cxs)))
+        shift = int(round(draw / 2 - sum(cxs) / len(cxs)))
         if shift == 0:
             return imgs
         out = []
         for im in imgs:
-            canvas = QImage(DRAW_SIZE, DRAW_SIZE, QImage.Format_ARGB32)
+            canvas = QImage(draw, draw, QImage.Format_ARGB32)
             canvas.fill(Qt.transparent)
             p = QPainter(canvas)
             p.drawImage(shift, 0, im)
@@ -260,16 +310,16 @@ class SpriteBank:
             out.append(canvas)
         return out
 
-    @staticmethod
-    def _cut_rig(img, geo, mirrored=False):
+    def _cut_rig(self, img, geo, mirrored=False):
         """把精灵切成 身体/前腿/后腿 三块（带接缝渐隐）
         mirrored=True 时输入为镜像图：分割线镜像，部件按解剖学归属命名"""
-        # 规范化到250x250画布(水平居中/底部对齐)，与离线烘焙几何严格对齐
-        canvas = QImage(DRAW_SIZE, DRAW_SIZE, QImage.Format_ARGB32)
+        # 规范化到draw_size画布(水平居中/底部对齐)，与离线烘焙几何严格对齐
+        draw = self.draw_size
+        canvas = QImage(draw, draw, QImage.Format_ARGB32)
         canvas.fill(Qt.transparent)
         cp = QPainter(canvas)
-        cp.drawImage((DRAW_SIZE - img.width()) // 2,
-                     DRAW_SIZE - img.height(), img)
+        cp.drawImage((draw - img.width()) // 2,
+                     draw - img.height(), img)
         cp.end()
         img = canvas
 
@@ -510,15 +560,36 @@ class PetWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(WINDOW_TITLE)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        # v25 (P1): 根治"点击宠物外区域宠物消失"——
+        # 旧代码用 Qt.Tool：Windows下Tool窗口属于"工具浮窗"，其他应用激活时系统会隐藏它。
+        # 改为普通 Qt.Window + WS_EX_NOACTIVATE：窗口永不抢占焦点、不抢前台，
+        # 但属于独立顶层窗口，失焦/切走都不会被系统隐藏。
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Window)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setFixedSize(CANVAS, CANVAS)
+
+        # v25 (P9): 读取持久化缩放比例（默认1.0）
+        self.zoom = load_zoom()
+        self.setFixedSize(int(CANVAS * self.zoom), int(CANVAS * self.zoom))
 
         self.bank = SpriteBank()
+        self.bank.draw_size = int(DRAW_SIZE * self.zoom)  # 精灵按缩放预渲染
         self.bank.load()
         self.particles = ParticleSystem()
         self.physics = Physics()
+        # Windows原生扩展样式：宠物窗口不激活、不抢焦点（Tool行为的手感，无Tool的消失bug）
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                GWL_EXSTYLE = -20
+                WS_EX_NOACTIVATE = 0x08000000
+                WS_EX_TOOLWINDOW = 0x00000080  # 不占任务栏按钮（原Qt.Tool的手感）
+                user32 = ctypes.windll.user32
+                st = user32.GetWindowLongW(int(self.winId()), GWL_EXSTYLE)
+                user32.SetWindowLongW(int(self.winId()), GWL_EXSTYLE,
+                                      st | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+            except Exception:
+                pass
 
         self.state = 'idle'
         self.state_started = time.perf_counter()
@@ -569,10 +640,10 @@ class PetWindow(QWidget):
         self.leg_amp = 0.0      # 摆幅系数（起步缓入，停止缓出）
         self._last_paint_dt = time.perf_counter()
 
-        # 初始位置：屏幕底部
+        # 初始位置：屏幕底部（按缩放窗口尺寸定位）
         sg = QApplication.primaryScreen().geometry()
-        self.floor_y = sg.bottom() - CANVAS - 45
-        self.move(sg.center().x() - CANVAS // 2, self.floor_y)
+        self.floor_y = sg.bottom() - int(CANVAS * self.zoom) - 45
+        self.move(sg.center().x() - int(CANVAS * self.zoom) // 2, self.floor_y)
 
         self.last_t = time.perf_counter()
         self.timer = QTimer(self)
@@ -580,6 +651,47 @@ class PetWindow(QWidget):
         self.timer.timeout.connect(self.game_loop)
         self.timer.start(16)
         self.show()
+
+        # v25 (P1): 可见性守护——无论什么原因窗口被隐藏/最小化，2秒内强制恢复。
+        # 宠物常驻桌面：只有右键菜单"退出"才能真正关闭。
+        self._vis_timer = QTimer(self)
+        self._vis_timer.timeout.connect(self._ensure_visible)
+        self._vis_timer.start(2000)
+
+    # ─────────── v25 (P1/P9): 常驻守护 & 缩放 ───────────
+    def _ensure_visible(self):
+        """窗口不可见/被最小化时强制恢复（右键"退出"是唯一关闭途径）"""
+        if not self.isVisible() or self.isMinimized():
+            self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
+            self.show()
+
+    def changeEvent(self, event):
+        """拦截外部最小化（如Win+D/任务栏"显示桌面"会短暂隐藏所有窗口），保持常驻"""
+        if event.type() == event.WindowStateChange and self.isMinimized():
+            QTimer.singleShot(0, self._ensure_visible)
+        super().changeEvent(event)
+
+    def set_zoom(self, new_zoom):
+        """v25 (P9): 运行时切换缩放——重建精灵+调整窗口+底部锚定，并持久化"""
+        new_zoom = max(ZOOM_MIN, min(ZOOM_MAX, new_zoom))
+        if abs(new_zoom - self.zoom) < 1e-6:
+            return
+        self.zoom = new_zoom
+        save_zoom(new_zoom)
+        self.bank.draw_size = int(DRAW_SIZE * new_zoom)
+        self.bank.load()
+        cw = int(CANVAS * new_zoom)
+        old_w, old_h = self.width(), self.height()
+        self.setFixedSize(cw, cw)
+        sg = QApplication.primaryScreen().geometry()
+        self.floor_y = sg.bottom() - cw - 45
+        # 以窗口中心为锚点缩放，并钳制在屏幕内
+        nx = self.x() + old_w // 2 - cw // 2
+        ny = min(self.y() + old_h - cw, self.floor_y)
+        nx = max(0, min(nx, sg.right() - cw))
+        ny = max(0, min(ny, sg.bottom() - cw))
+        self.move(nx, ny)
+        self.update()
 
     # ─────────── 状态切换 ───────────
     def set_state(self, s, duration=None):
@@ -630,7 +742,7 @@ class PetWindow(QWidget):
             # v10 跳出边框根治：移动一律钳制在屏幕内。
             # 旧代码逗弄模式追鼠标无边界→狗追到屏幕外，头/尾被屏幕边缘裁掉。
             sg = QApplication.primaryScreen().geometry()
-            lo, hi = sg.left(), sg.right() - CANVAS
+            lo, hi = sg.left(), sg.right() - self.width()
             if nx < lo:
                 nx = lo; self.vel_x = max(0.0, self.vel_x); self.move_acc = 0.0
             elif nx > hi:
@@ -744,7 +856,7 @@ class PetWindow(QWidget):
         self.smooth_air += (raw_air - self.smooth_air) * min(1.0, dt / 0.09)
         self.update_ai(dt)
         impact = self.physics.update(dt, self, self.floor_y, 0,
-                                      QApplication.primaryScreen().geometry().right() - CANVAS)
+                                      QApplication.primaryScreen().geometry().right() - self.width())
         if impact > 200:
             self.particles.emit(ParticleSystem.DUST, CANVAS / 2, CANVAS - GROUND_PAD, 4)
 
@@ -774,7 +886,7 @@ class PetWindow(QWidget):
         # ── 逗弄模式：追鼠标（缓动速度+转身动画）──
         if self.mode == 'tease':
             cursor = QCursor.pos()
-            cx = self.x() + CANVAS // 2
+            cx = self.x() + self.width() // 2
             dx = cursor.x() - cx
             if abs(dx) > 46:
                 if st not in ('run', 'walk'):
@@ -791,7 +903,7 @@ class PetWindow(QWidget):
                 if st == 'run':
                     self.set_state('idle')
             # 靠近鼠标时冒爱心
-            dist = math.hypot(cursor.x() - cx, cursor.y() - (self.y() + CANVAS // 2))
+            dist = math.hypot(cursor.x() - cx, cursor.y() - (self.y() + self.height() // 2))
             if dist < 150 and random.random() < dt * 2.5:
                 self.particles.emit(ParticleSystem.HEART, CANVAS / 2, 80, 1)
             return
@@ -808,7 +920,7 @@ class PetWindow(QWidget):
         # ── 如厕 ──
         if self.potty_need >= 100 and st not in ('potty_run', 'potty'):
             self.set_state('potty_run')
-            edge = random.choice([30, sg.right() - CANVAS - 30])
+            edge = random.choice([30, sg.right() - self.width() - 30])
             self.roam_target = edge
             self.say('内急...')
             return
@@ -817,7 +929,7 @@ class PetWindow(QWidget):
             tx = self.roam_target
             if tx is None:
                 # 防御：无目标点时就近选屏幕边缘，避免 None 运算崩溃
-                tx = self.roam_target = random.choice([30, sg.right() - CANVAS - 30])
+                tx = self.roam_target = random.choice([30, sg.right() - self.width() - 30])
             if abs(self.x() - tx) < 28:
                 self.state_duration.pop('sit', None)
                 self.set_state('potty')
@@ -877,7 +989,7 @@ class PetWindow(QWidget):
                 # 贴墙时强制朝空旷一侧走
                 if self.x() < 120:
                     self.walk_dir = 1
-                elif self.x() > sg2.right() - CANVAS - 120:
+                elif self.x() > sg2.right() - self.width() - 120:
                     self.walk_dir = -1
                 else:
                     self.walk_dir = random.choice([-1, 1])
@@ -900,7 +1012,7 @@ class PetWindow(QWidget):
         else:  # desktop
             if r < 0.5:
                 self.set_state('walk')
-                self.roam_target = random.randint(30, sg.right() - CANVAS - 30)
+                self.roam_target = random.randint(30, sg.right() - self.width() - 30)
             elif r < 0.62:
                 self.set_state('happy', duration=3.3)
             elif r < 0.74:
@@ -940,11 +1052,11 @@ class PetWindow(QWidget):
                 self.walk_dir = 1
                 self._start_turn(1)
                 self.ai_timer = 0.0   # 贴墙后立即重新决策，避免撞墙呆站
-            elif x >= sg.right() - CANVAS and self.walk_dir > 0:
+            elif x >= sg.right() - self.width() and self.walk_dir > 0:
                 self.walk_dir = -1
                 self._start_turn(-1)
                 self.ai_timer = 0.0
-            x = max(0, min(self.x(), sg.right() - CANVAS))
+            x = max(0, min(self.x(), sg.right() - self.width()))
             if x != self.x():
                 self.move(x, self.y())
 
@@ -976,6 +1088,9 @@ class PetWindow(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        # v25 (P9): 统一缩放——全部绘制逻辑保持CANVAS=320逻辑坐标系，
+        # 一次scale让精灵(已按zoom预渲染)/粒子/气泡同步缩放
+        painter.scale(self.zoom, self.zoom)
 
         now = time.perf_counter()
         t = now - self.state_started
@@ -1073,26 +1188,11 @@ class PetWindow(QWidget):
                 vx = (x1 - x0) / (t1 - t0)
                 rot += max(-8, min(8, vx * 0.012))  # ±8°内不超出窗口余量，避免旋转裁切
 
-        # ── 动态投影（离地越高影子越小越淡——强化跳跃/悬浮的真实感）──
+        # ── 图像获取（v25 P2: 动态投影已删除——用户明确要求去掉所有底部影子）──
         img = self.bank.get(self.state, self.frame_idx, self.flipped)
         if img.isNull():
             painter.end()
             return
-        # v9: 阴影恒绘制（旧代码拖拽/物理时直接隐藏→"一会儿有一会儿没有"）；
-        # 离地高度用game_loop里的平滑值，消除帧间跳动引起的闪烁
-        lift_seq = self.bank.lift_map.get(self.state)
-        air = self.smooth_air if lift_seq else max(0.0, min(1.0, -bob / 14.0))
-        sh_w = DRAW_SIZE * 0.46 * (1.0 - air * 0.45) * sx
-        sh_a = int(72 * (1.0 - air * 0.55))
-        if self.physics.active or self.dragging:
-            sh_a = max(18, sh_a // 2)   # 空中/拖拽时影子变淡但保持可见
-        grad = QRadialGradient(dx, CANVAS - 7, sh_w / 2)
-        grad.setColorAt(0.0, QColor(30, 30, 45, sh_a))
-        grad.setColorAt(0.7, QColor(30, 30, 45, int(sh_a * 0.45)))
-        grad.setColorAt(1.0, QColor(30, 30, 45, 0))
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(grad))
-        painter.drawEllipse(QPointF(dx, CANVAS - 7), sh_w / 2, sh_w * 0.11)
 
         # ── 应用变换绘制 ──
         painter.save()
@@ -1157,7 +1257,7 @@ class PetWindow(QWidget):
             if self.mode == 'tease':
                 self.mode = 'taskbar'
                 sg = QApplication.primaryScreen().geometry()
-                self.floor_y = sg.bottom() - CANVAS - 45
+                self.floor_y = sg.bottom() - self.height() - 45
                 self.set_state('idle')
                 self.say('抓到我了!')
             else:
@@ -1171,8 +1271,8 @@ class PetWindow(QWidget):
             self.mouse_hist = [h for h in self.mouse_hist if now - h[0] < 0.12]
             # 拖拽限制在屏幕内：旧代码可拖出屏幕→头/尾被屏幕边缘裁掉
             sg = QApplication.primaryScreen().geometry()
-            nx = max(0, min(gp.x() - self.drag_off.x(), sg.right() - CANVAS))
-            ny = max(0, min(gp.y() - self.drag_off.y(), sg.bottom() - CANVAS))
+            nx = max(0, min(gp.x() - self.drag_off.x(), sg.right() - self.width()))
+            ny = max(0, min(gp.y() - self.drag_off.y(), sg.bottom() - self.height()))
             self.move(nx, ny)
 
     def mouseReleaseEvent(self, event):
@@ -1205,22 +1305,17 @@ class PetWindow(QWidget):
         self.happiness = min(100, self.happiness + 6)
 
     def contextMenuEvent(self, event):
-        menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu { background:#2b2b3a; color:#e8e8f0; border:1px solid #45455c;
-                    border-radius:8px; padding:6px; font-size:13px;
-                    font-family:'%s'; }
-            QMenu::item { padding:8px 26px; border-radius:5px; }
-            QMenu::item:selected { background:#4a4a6e; }
-            QMenu::separator { height:1px; background:#45455c; margin:4px 10px; }
-        """ % _UI_FONT)
+        # v25 (P3): 统一菜单工厂——弹窗窗口自身WA_TranslucentBackground，
+        # 圆角样式之外的区域真正透明，根治"四角白角"。子菜单同样处理。
+        menu = make_menu(self)
 
         a_tease = menu.addAction('🐾 退出逗弄' if self.mode == 'tease' else '🐾 逗逗我')
         menu.addSeparator()
         a_feed = menu.addAction('🍖 喂食')
         a_pet = menu.addAction('🤚 摸摸头')
         menu.addSeparator()
-        trick_menu = menu.addMenu('🎪 表演')
+        trick_menu = make_menu(self, '🎪 表演')
+        menu.addMenu(trick_menu)
         t_happy = trick_menu.addAction('开心跳跃')
         t_roll = trick_menu.addAction('打滚')
         t_dance = trick_menu.addAction('跳舞')
@@ -1229,7 +1324,15 @@ class PetWindow(QWidget):
         t_beg = trick_menu.addAction('作揖')
         t_bath = trick_menu.addAction('洗澡')
         menu.addSeparator()
-        mode_menu = menu.addMenu('📍 模式')
+        # v25 (P9): 缩放子菜单——放大/缩小/重置，比例持久化
+        size_menu = make_menu(self, '🔍 大小')
+        menu.addMenu(size_menu)
+        z_up = size_menu.addAction('➕ 放大')
+        z_down = size_menu.addAction('➖ 缩小')
+        z_reset = size_menu.addAction('↩ 重置')
+        menu.addSeparator()
+        mode_menu = make_menu(self, '📍 模式')
+        menu.addMenu(mode_menu)
         m_taskbar = mode_menu.addAction('任务栏漫步')
         m_desktop = mode_menu.addAction('桌面漫游')
         menu.addSeparator()
@@ -1246,7 +1349,7 @@ class PetWindow(QWidget):
             if self.mode == 'tease':
                 self.mode = 'taskbar'
                 sg = QApplication.primaryScreen().geometry()
-                self.floor_y = sg.bottom() - CANVAS - 45
+                self.floor_y = sg.bottom() - self.height() - 45
                 self.set_state('idle')
             else:
                 self.mode = 'tease'
@@ -1276,13 +1379,22 @@ class PetWindow(QWidget):
         elif action == m_taskbar:
             self.mode = 'taskbar'
             sg = QApplication.primaryScreen().geometry()
-            self.floor_y = sg.bottom() - CANVAS - 45
+            self.floor_y = sg.bottom() - self.height() - 45
             self.move(self.x(), self.floor_y)
             self.set_state('idle')
         elif action == m_desktop:
             self.mode = 'desktop'
             self.set_state('idle')
             self.say('自由啦!')
+        elif action == z_up:
+            self.set_zoom(self.zoom + ZOOM_STEP)
+            self.say(f'大小 {self.zoom:.2f}x')
+        elif action == z_down:
+            self.set_zoom(self.zoom - ZOOM_STEP)
+            self.say(f'大小 {self.zoom:.2f}x')
+        elif action == z_reset:
+            self.set_zoom(ZOOM_DEFAULT)
+            self.say('恢复默认大小')
         elif action == a_sleep:
             self.set_state('sleep')
         elif action == a_stats:
