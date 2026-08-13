@@ -179,7 +179,7 @@ class SpriteBank:
                 img = QImage(fn)
                 if img.isNull():
                     continue
-                img = img.convertToFormat(QImage.Format_ARGB32)
+                img = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
                 # 缩放到目标尺寸（双线性平滑）
                 img = img.scaled(draw, draw,
                                   Qt.KeepAspectRatio, Qt.SmoothTransformation)

@@ -17,10 +17,10 @@ jobs:
         include:
           - runner: macos-15        # Apple Silicon runner
             arch: arm64
-            release_name: "哈士奇桌面宠物 v30 (macOS Apple Silicon / M系列芯片)"
+            release_name: "哈士奇桌面宠物 v31 (macOS Apple Silicon / M系列芯片)"
           - runner: macos-15-intel  # Intel runner（GitHub最后一个x86_64镜像，可用至2027年8月）
             arch: x86_64
-            release_name: "哈士奇桌面宠物 v30 (macOS Intel)"
+            release_name: "哈士奇桌面宠物 v31 (macOS Intel)"
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
@@ -75,33 +75,33 @@ jobs:
           mkdir dmg_stage
           cp -R "dist/哈士奇桌面宠物.app" dmg_stage/
           ln -s /Applications dmg_stage/Applications
-          hdiutil create -volname "哈士奇桌面宠物" -srcfolder dmg_stage -ov -format UDZO "HuskyPet-v30-macOS-${{ matrix.arch }}.dmg"
+          hdiutil create -volname "哈士奇桌面宠物" -srcfolder dmg_stage -ov -format UDZO "HuskyPet-v31-macOS-${{ matrix.arch }}.dmg"
 
       - name: Verify DMG
         run: |
-          hdiutil verify "HuskyPet-v30-macOS-${{ matrix.arch }}.dmg"
+          hdiutil verify "HuskyPet-v31-macOS-${{ matrix.arch }}.dmg"
           ls -lh *.dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: husky-macos-dmg-${{ matrix.arch }}
-          path: "HuskyPet-v30-macOS-${{ matrix.arch }}.dmg"
+          path: "HuskyPet-v31-macOS-${{ matrix.arch }}.dmg"
           retention-days: 30
 
       - name: Cleanup previous release（重建干净的Release）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release delete v30-macos-${{ matrix.arch }} --yes --cleanup-tag 2>/dev/null || true
+        run: gh release delete v31-macos-${{ matrix.arch }} --yes --cleanup-tag 2>/dev/null || true
 
       - name: Create Release（公开下载链接，朋友无需登录即可下载）
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v30-macos-${{ matrix.arch }}
+          tag_name: v31-macos-${{ matrix.arch }}
           name: ${{ matrix.release_name }}
           body: |
             macOS版安装包（${{ matrix.arch }}架构）。
             选哪个版本：苹果菜单 → 关于本机，处理器显示"Intel"就下载x86_64版，显示"Apple M1/M2/M3/M4"就下载arm64版。
             首次打开：右键点击应用→选择"打开"→再点"打开"。
             若提示"已损坏"：终端执行 xattr -cr /Applications/哈士奇桌面宠物.app
-          files: "HuskyPet-v30-macOS-${{ matrix.arch }}.dmg"
+          files: "HuskyPet-v31-macOS-${{ matrix.arch }}.dmg"
