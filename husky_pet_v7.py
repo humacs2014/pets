@@ -53,7 +53,7 @@ ANIMS = {
     # v25(P4补帧): 帧数较v8提升1.7x~2x，消除掉帧感。frame_ms按比例缩短以保持
     #   总时长不变（引擎按 elapsed/frame_ms 推进帧，帧数翻倍则帧时长减半）。
     #   intro_frames同样按比例放大；帧间插值由build_reframe.py离线生成。
-    #   sleep/stretch为定制几何重建序列，保持49/37帧不动（已足够平滑）。
+    #   sleep为intro(0-38坐→哈欠→侧倒)+循环段(39-47侧躺呼吸ping-pong)；stretch 49帧。
     'idle':      ('idle',      44, 96,  True,  0),
     'walk':      ('walk',      20, 60,  True,  0),
     'run':       ('run',       15, 54,  True,  0),
@@ -61,7 +61,9 @@ ANIMS = {
     'bark':      ('bark',      34, 70,  True,  0),
     'sleep':     ('sleep',     48, 110, True,  39),
     'sit':       ('sit',       41, 65,  True,  14),
-    'lick':      ('lick',      32, 74,  True,  0),
+    # v46: 素材含2舔毛周期→"循环两次"感。重构54帧=0-7坐下intro(播一次)+
+    #   8-31单舔毛周期正播+30-9倒播ping-pong(抬回=无缝循环)，duration配套4.0
+    'lick':      ('lick',      54, 74,  True,  8),
     'happy':     ('happy',     44, 59,  False, 0),
     'roll':      ('roll',      44, 65,  True,  0),
     'dance':     ('dance',     37, 65,  True,  0),
@@ -952,7 +954,7 @@ class PetWindow(QWidget):
         # ── 睡觉 ──
         if st == 'sleep':
             if (st_time > 10 and self.energy >= 95) or st_time > 40:
-                self.set_state('stretch', duration=4.9)
+                self.set_state('idle')
                 self.say('睡醒了!')
             return
 
@@ -1002,7 +1004,7 @@ class PetWindow(QWidget):
             elif r < 0.66:
                 self.set_state('bark', duration=2.4)
             elif r < 0.76:
-                self.set_state('lick', duration=4.8)
+                self.set_state('lick', duration=4.0)
             elif r < 0.84:
                 self.set_state('roll', duration=5.72)
             elif r < 0.92:
@@ -1016,7 +1018,7 @@ class PetWindow(QWidget):
             elif r < 0.62:
                 self.set_state('happy', duration=3.3)
             elif r < 0.74:
-                self.set_state('lick', duration=4.8)
+                self.set_state('lick', duration=4.0)
             elif r < 0.84:
                 self.set_state('roll', duration=5.72)
             else:
@@ -1371,7 +1373,7 @@ class PetWindow(QWidget):
         elif action == t_bark:
             self.set_state('bark', duration=2.4)
         elif action == t_lick:
-            self.set_state('lick', duration=4.8)
+            self.set_state('lick', duration=4.0)
         elif action == t_beg:
             self.set_state('beg', duration=7.2)
         elif action == t_bath:
