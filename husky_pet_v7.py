@@ -54,26 +54,30 @@ ANIMS = {
     #   总时长不变（引擎按 elapsed/frame_ms 推进帧，帧数翻倍则帧时长减半）。
     #   intro_frames同样按比例放大；帧间插值由build_reframe.py离线生成。
     #   sleep为intro(0-38坐→哈欠→侧倒)+循环段(39-47侧躺呼吸ping-pong)；stretch 49帧。
-    'idle':      ('idle',      44, 96,  True,  0),
+    # v53 节奏统一：所有状态源视频均24fps原生、时长≈5.04s（sleep 10.04s）。
+    #   旧配置遗留v8-era压缩时长（1.9~4.9s不等），导致动作忽快忽慢（相对源速1.2~2.7倍）。
+    #   frame_ms 一律恢复为 源时长/帧数，动作速度=Agnes生成时的真实动物速度。
+    #   walk/run(步态循环+腿装配)、eat(定制碗)、sleep(10s含intro)、lick(双周期定制)为认可版，保持。
+    'idle':      ('idle',      101, 50,  True,  0),   # 5.05s = 源5.04s
     'walk':      ('walk',      20, 60,  True,  0),
     'run':       ('run',       15, 54,  True,  0),
-    'eat':       ('eat',       34, 96,  True,  0),
-    'bark':      ('bark',      34, 70,  True,  0),
-    'sleep':     ('sleep',     48, 110, True,  39),
-    'sit':       ('sit',       41, 65,  True,  14),
+    'eat':       ('eat',       34, 96,  True,  0),    # 定制认可版(碗烤入),不升帧
+    'bark':      ('bark',      57, 90,  True,  0),    # 5.13s = 源5.04s
+    'sleep':     ('sleep',     51, 110, True,  39),   # v50 P3: 同源重生成(完全侧躺四脚摊开) 39 intro+12 loop
+    'sit':       ('sit',       63, 80,  True,  22),   # 5.04s = 源5.04s
     # v46: 素材含2舔毛周期→"循环两次"感。重构54帧=0-7坐下intro(播一次)+
     #   8-31单舔毛周期正播+30-9倒播ping-pong(抬回=无缝循环)，duration配套4.0
     'lick':      ('lick',      54, 74,  True,  8),
-    'happy':     ('happy',     44, 59,  False, 0),
-    'roll':      ('roll',      44, 65,  True,  0),
-    'dance':     ('dance',     37, 65,  True,  0),
-    'stretch':   ('stretch',   49, 100, False, 0),
-    'beg':       ('beg',       30, 79,  True,  0),
-    'bath':      ('bath',      34, 70,  True,  0),
-    'surprised': ('surprised', 29, 65,  False, 0),
-    'play_dead': ('play_dead', 44, 65,  False, 0),
+    'happy':     ('happy',     62, 82,  False, 0),    # 5.08s = 源5.04s 一次性
+    'roll':      ('roll',      121, 42, False, 0),    # v54: puppy管线重生成 24fps原生全帧 5.08s 一次性(站→仰滚→坐)
+    'dance':     ('dance',     57, 90,  True,  0),    # 5.13s = 源5.04s
+    'stretch':   ('stretch',   117, 43, False, 0),    # 5.03s = 源5.04s
+    'beg':       ('beg',       56, 91,  True,  0),    # 5.10s = 源5.04s
+    'bath':      ('bath',      57, 90,  True,  0),    # 5.13s = 源5.04s
+    'surprised': ('surprised', 45, 114, False, 0),    # 5.13s = 源5.04s 一次性
+    'play_dead': ('play_dead', 68, 75,  False, 0),    # 5.10s = 源5.04s 一次性
     'potty_run': ('run',       15, 54,  True,  0),  # 复用run帧，帧数必须与run一致
-    'potty':     ('sit',       41, 65,  True,  14),
+    'potty':     ('sit',       63, 80,  True,  22),   # 复用sit帧(同v53)
 }
 
 # 朝向左的状态（素材本身朝左，向右移动时需镜像）
@@ -203,19 +207,12 @@ class SpriteBank:
                 img = img.scaled(draw, draw,
                                   Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 imgs.append(img)
-                # 预生成镜像版本
-                imgs_m.append(img.mirrored(True, False))
-            # v11: 帧水平居中——根治'超出边框'。walk素材内容贴左缘(L=0)、质心偏-44px，
-            # 镜像后狗头顶到窗口右缘；帧间质心漂移还导致左右晃动。用全序列平均质心统一平移。
-            # v48: 镜像帧偏移公式推导(=draw-w+1-shift)，免去整批镜像帧二次质心扫描。
-            imgs, sh = self._center_frames(imgs)
-            if sh and imgs_m:
-                imgs_m, _ = self._center_frames(
-                    imgs_m, shift=self.draw_size - imgs_m[0].width() + 1 - sh)
-            else:
-                imgs_m, _ = self._center_frames(imgs_m)
+            # v49: 镜像懒生成——旧版每帧预生成normal+mirror双份ARGB32，
+            # 13状态×2=1300+张常驻≈300MB+。镜像仅walk/run/potty_run横向移动时消费，
+            # 改为get()首次请求时按需镜像已居中的draw×draw画布（居中天然对称，无shift误差）。
+            imgs, _sh = self._center_frames(imgs)
             self.frames[state] = imgs
-            self.frames_m[state] = imgs_m
+            self.frames_m[state] = [None] * len(imgs)
             # ── 每帧离地高度：内容包围盒底边相对全序列最大底边的抬升（归一化0..1）──
             # 纯Python抽样扫描：从底向上逐行、每8列取一点（脚底通常前几行即命中）
             bottoms = []
@@ -391,8 +388,13 @@ class SpriteBank:
                 'amp_deg': geo['amp_deg']}
 
     def get(self, state, idx, flipped):
-        bank = self.frames_m[state] if flipped else self.frames[state]
-        return bank[idx % len(bank)]
+        if flipped:
+            bank = self.frames_m[state]
+            i = idx % len(bank)
+            if bank[i] is None:  # v49镜像懒生成：首次请求才镜像，内存减半
+                bank[i] = self.frames[state][i].mirrored(True, False)
+            return bank[i]
+        return self.frames[state][idx % len(self.frames[state])]
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1045,15 +1047,15 @@ class PetWindow(QWidget):
                     self.facing = self.walk_dir
                     self.flipped = self.facing > 0
             elif r < 0.55:
-                self.set_state('happy', duration=3.3)
+                self.set_state('happy', duration=5.1)
             elif r < 0.66:
-                self.set_state('bark', duration=2.4)
+                self.set_state('bark', duration=5.1)
             elif r < 0.76:
                 self.set_state('lick', duration=4.0)
             elif r < 0.84:
-                self.set_state('roll', duration=5.72)
+                self.set_state('roll', duration=5.1)
             elif r < 0.92:
-                self.set_state('dance', duration=7.26)
+                self.set_state('dance', duration=10.3)
             else:
                 self.set_state('idle')
         else:  # desktop
@@ -1061,11 +1063,11 @@ class PetWindow(QWidget):
                 self.set_state('walk')
                 self.roam_target = random.randint(30, sg.right() - self.width() - 30)
             elif r < 0.62:
-                self.set_state('happy', duration=3.3)
+                self.set_state('happy', duration=5.1)
             elif r < 0.74:
                 self.set_state('lick', duration=4.0)
             elif r < 0.84:
-                self.set_state('roll', duration=5.72)
+                self.set_state('roll', duration=5.1)
             else:
                 self.set_state('idle')
 
@@ -1347,8 +1349,8 @@ class PetWindow(QWidget):
     def mouseDoubleClickEvent(self, event):
         trick = random.choice(['happy', 'roll', 'dance', 'bark'])
         # 各绝活时长对齐循环周期整数倍（happy为一次性），避免结束中途硬切
-        self.set_state(trick, duration={'happy': 3.3, 'roll': 5.72,
-                                        'dance': 7.26, 'bark': 2.4}[trick])
+        self.set_state(trick, duration={'happy': 5.1, 'roll': 5.1,
+                                        'dance': 10.3, 'bark': 5.1}[trick])
         self.happiness = min(100, self.happiness + 6)
 
     def contextMenuEvent(self, event):
@@ -1408,21 +1410,21 @@ class PetWindow(QWidget):
             self.happiness = min(100, self.happiness + 5)
         elif action == a_pet:
             self.happiness = min(100, self.happiness + 10)
-            self.set_state('happy', duration=3.3)
+            self.set_state('happy', duration=5.1)
         elif action == t_happy:
-            self.set_state('happy', duration=3.3)
+            self.set_state('happy', duration=5.1)
         elif action == t_roll:
-            self.set_state('roll', duration=5.72)
+            self.set_state('roll', duration=5.1)
         elif action == t_dance:
-            self.set_state('dance', duration=7.26)
+            self.set_state('dance', duration=10.3)
         elif action == t_bark:
-            self.set_state('bark', duration=2.4)
+            self.set_state('bark', duration=5.1)
         elif action == t_lick:
             self.set_state('lick', duration=4.0)
         elif action == t_beg:
-            self.set_state('beg', duration=7.2)
+            self.set_state('beg', duration=5.1)
         elif action == t_bath:
-            self.set_state('bath', duration=9.6)
+            self.set_state('bath', duration=10.3)
         elif action == m_taskbar:
             self.mode = 'taskbar'
             sg = QApplication.primaryScreen().geometry()
@@ -1550,6 +1552,12 @@ def main():
         _activate_existing_instance()  # 不再静默退出：激活已有窗口给用户反馈
         return
     # 高DPI支持：必须在QApplication创建前设置
+    # v49-fix: PassThrough 舍入策略——用监视器真实缩放(如1.5x)，不做整数舍入。
+    # 根治 Windows 高缩放下"后缓冲尺寸≠物理窗口尺寸"的合成错位（黑屏/狗碎片）：
+    # 默认Round把1.5x舍入成2.0，后缓冲640px被合成进~427px窗口→裁切+偏移。
+    # (实测本机不支持SetProcessDpiAwarenessContext，err=87，勿再加原生DPI调用)
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
