@@ -17,10 +17,10 @@ jobs:
         include:
           - runner: macos-15        # Apple Silicon runner
             arch: arm64
-            release_name: "哈士奇桌面宠物 v54 (macOS Apple Silicon / M系列芯片)"
+            release_name: "哈士奇桌面宠物 v56 (macOS Apple Silicon / M系列芯片)"
           - runner: macos-15-intel  # Intel runner（GitHub最后一个x86_64镜像，可用至2027年8月）
             arch: x86_64
-            release_name: "哈士奇桌面宠物 v54 (macOS Intel)"
+            release_name: "哈士奇桌面宠物 v56 (macOS Intel)"
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
@@ -69,39 +69,53 @@ jobs:
           git commit -m "CI: build failure log (${{ matrix.arch }})" || true
           git push -f origin ci-logs || true
 
+      - name: Ad-hoc codesign（无Apple开发者证书的最优解：有签名=Gatekeeper不报"已损坏"，仅报"无法验证开发者"可用右键打开/一键脚本绕过）
+        run: |
+          codesign --force --deep --sign - "dist/哈士奇桌面宠物.app"
+          codesign -dv "dist/哈士奇桌面宠物.app" 2>&1 | head -5
+
+      - name: 一键打开脚本（朋友双击即用，自动清quarantine并启动）
+        run: |
+          printf '#!/bin/bash\ncd "$(dirname "$0")"\nif [ -d "哈士奇桌面宠物.app" ]; then A="$(pwd)/哈士奇桌面宠物.app"; else A="/Applications/哈士奇桌面宠物.app"; fi\nxattr -cr "$A" 2>/dev/null\nopen "$A"\n' > "双击打开.command"
+          chmod +x "双击打开.command"
+
       - name: Package DMG
         run: |
           rm -rf dmg_stage
           mkdir dmg_stage
           cp -R "dist/哈士奇桌面宠物.app" dmg_stage/
+          cp "双击打开.command" dmg_stage/
+          chmod +x "dmg_stage/双击打开.command"
           ln -s /Applications dmg_stage/Applications
-          hdiutil create -volname "哈士奇桌面宠物" -srcfolder dmg_stage -ov -format UDZO "HuskyPet-v54-macOS-${{ matrix.arch }}.dmg"
+          hdiutil create -volname "哈士奇桌面宠物" -srcfolder dmg_stage -ov -format UDZO "HuskyPet-v56-macOS-${{ matrix.arch }}.dmg"
 
       - name: Verify DMG
         run: |
-          hdiutil verify "HuskyPet-v54-macOS-${{ matrix.arch }}.dmg"
+          hdiutil verify "HuskyPet-v56-macOS-${{ matrix.arch }}.dmg"
           ls -lh *.dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: husky-macos-dmg-${{ matrix.arch }}
-          path: "HuskyPet-v54-macOS-${{ matrix.arch }}.dmg"
+          path: "HuskyPet-v56-macOS-${{ matrix.arch }}.dmg"
           retention-days: 30
 
       - name: Cleanup previous release（重建干净的Release）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release delete v54-macos-${{ matrix.arch }} --yes --cleanup-tag 2>/dev/null || true
+        run: gh release delete v56-macos-${{ matrix.arch }} --yes --cleanup-tag 2>/dev/null || true
 
       - name: Create Release（公开下载链接，朋友无需登录即可下载）
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v54-macos-${{ matrix.arch }}
+          tag_name: v56-macos-${{ matrix.arch }}
           name: ${{ matrix.release_name }}
           body: |
             macOS版安装包（${{ matrix.arch }}架构）。
-            选哪个版本：苹果菜单 → 关于本机，处理器显示"Intel"就下载x86_64版，显示"Apple M1/M2/M3/M4"就下载arm64版。
-            首次打开：右键点击应用→选择"打开"→再点"打开"。
-            若提示"已损坏"：终端执行 xattr -cr /Applications/哈士奇桌面宠物.app
-          files: "HuskyPet-v54-macOS-${{ matrix.arch }}.dmg"
+            【选哪个版本】苹果菜单 → 关于本机：处理器显示"Apple M1/M2/M3/M4"→下载arm64版；显示"Intel"→下载x86_64版。下错版本会打不开！
+            【安装】双击DMG → 把"哈士奇桌面宠物"图标拖到Applications文件夹。
+            【首次打开（关键）】打开DMG里的"双击打开.command"（会弹出终端窗口自动处理安全限制并启动）。
+            备选：在访达里右键点击应用→选择"打开"→弹窗里再点"打开"。
+            仍提示"已损坏"：打开终端粘贴执行 xattr -cr /Applications/哈士奇桌面宠物.app 再双击打开。
+          files: "HuskyPet-v56-macOS-${{ matrix.arch }}.dmg"
