@@ -74,9 +74,21 @@ jobs:
           codesign --force --deep --sign - "dist/哈士奇桌面宠物.app"
           codesign -dv "dist/哈士奇桌面宠物.app" 2>&1 | head -5
 
-      - name: 一键打开脚本（朋友双击即用，自动清quarantine并启动）
+      - name: 一键打开脚本（朋友右键打开即用：自动装进Applications+清quarantine+启动）
         run: |
-          printf '#!/bin/bash\ncd "$(dirname "$0")"\nif [ -d "哈士奇桌面宠物.app" ]; then A="$(pwd)/哈士奇桌面宠物.app"; else A="/Applications/哈士奇桌面宠物.app"; fi\nxattr -cr "$A" 2>/dev/null\nopen "$A"\n' > "双击打开.command"
+          cat > "双击打开.command" <<'EOF'
+          #!/bin/bash
+          cd "$(dirname "$0")"
+          SRC="哈士奇桌面宠物.app"
+          DEST="/Applications/$SRC"
+          if [ ! -d "$DEST" ] && [ -d "$SRC" ]; then
+            cp -R "$SRC" /Applications/ 2>/dev/null || osascript -e "do shell script \"cp -R '$PWD/$SRC' /Applications/\" with administrator privileges" 2>/dev/null
+          fi
+          APP="$DEST"
+          [ -d "$APP" ] || APP="$(pwd)/$SRC"
+          xattr -cr "$APP" 2>/dev/null
+          open "$APP"
+          EOF
           chmod +x "双击打开.command"
 
       - name: Package DMG
