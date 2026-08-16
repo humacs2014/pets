@@ -3,7 +3,7 @@
 bake_prop.py 的输入：无碗进食帧，保留原始几何供三层烤帧缩放锚定。
 husky v47 起该步骤独立于 extract_frames.py（后者做loop/normalize，会丢头下探幅度）。
 """
-import os, subprocess, glob
+import os
 import numpy as np
 from PIL import Image
 from extract_frames import cutout_frames, extract
@@ -15,12 +15,13 @@ os.makedirs(OUT, exist_ok=True)
 fps = extract('eat')
 if not fps:
     raise SystemExit('no eat.mp4 frames')
-mats = cutout_frames(fps, 'eat_clean')
+mats = cutout_frames(fps, 'eat_clean')   # 返回 mat 文件路径列表
 n = 0
-for k, m in enumerate(mats):
-    a = np.array(m)
+for k, p in enumerate(mats):
+    im = Image.open(p).convert('RGBA')
+    a = np.array(im)
     if a[..., 3].max() < 40:
         continue
-    m.save(os.path.join(OUT, f'c_{k:03d}.png'))
+    im.save(os.path.join(OUT, f'c_{k:03d}.png'))
     n += 1
 print(f'WROTE {n} clean frames → clean/c_*.png')

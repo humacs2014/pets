@@ -32,12 +32,15 @@ TARGET_H = {
     'stretch': 291,
     # walk/run 侧面视角属站立档（husky实测 walk=274 run=272）
     'walk': 274, 'run': 274,
+    # lick/surprised 须锚定站立档（husky实测 270/265，否则拉布拉多424/406忽大忽小）
+    'lick': 274, 'surprised': 274,
 }
 # 重采样到引擎 ANIMS 声明帧数（引擎零改动按 count 加载）
 RT_FRAMES = {
     'idle': 101, 'eat': 34, 'bark': 57, 'sit': 63, 'roll': 121,
     'dance': 57, 'beg': 56, 'bath': 57, 'stretch': 117,
     'surprised': 45, 'play_dead': 68, 'sleep': 51, 'lick': 54,
+    'happy': 62,   # ONESHOT也须重采样到ANIMS帧数，否则拉布拉多36帧≠62播放过快
     'walk': 20, 'run': 15,
 }
 ALL_STATES = ['idle', 'sit', 'eat', 'bark', 'happy', 'roll', 'dance',

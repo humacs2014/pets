@@ -21,7 +21,8 @@ NFR = 34                # 目标帧数（=引擎ANIMS该状态帧数）
 PROP_SCALE = 1.75       # 道具放大倍数（原sprite通常偏小，husky碗实测1.75）
 SPLIT_ROW = 8           # 道具sprite前壁分割行（原图y>=SPLIT_ROW为前壁；
                         # 用像素行分析定：纯色行=前壁，食物像素集中行=食物层）
-BOWL_CX, BOWL_BOT = 125.0, 504.0  # 道具位置：cx按狗帧鼻尖x中点标定，底=地平线
+BOWL_CX, BOWL_BOT = 350.0, 504.0  # 道具位置：cx=低头鼻尖x(右朝向=主体右端)，底=地平线
+FACING = 'right'      # 狗朝向: 'left'(husky式鼻尖=最左) / 'right'(拉布拉多eat=最右)
 DOG_H_ANCHOR = 230.0    # 狗帧高度锚定(90th percentile)
 DOG_SCALE_CAP = 2.2     # 缩放上限
 MIN_DOG_H = 100         # 低于此高度的帧视为无效(未入场)
@@ -71,7 +72,7 @@ for k, dog in enumerate(dogs):
     a = np.array(dog)
     m = a[:, :, 3] > 16
     ys, xs = np.where(m)
-    j = np.argmin(xs)
+    j = np.argmin(xs) if FACING == 'left' else np.argmax(xs)  # 鼻尖=朝向侧极端点
     noses.append((int(xs[j]), int(ys[j])))
     comp = Image.new('RGBA', (512, 512), (0, 0, 0, 0))
     comp.paste(bw, (bx, by), bw)        # 底：道具全图

@@ -62,9 +62,11 @@ ACTIONS = {
                   'completely alone.', ', hand, hands, fingers, arm'),
     'play_dead': (' It flops down onto its side and lies completely still, pretending to be '
                   'dead with relaxed legs.', ''),
-    'eat':       (' It stands and eats eagerly, head bobbing down toward an empty spot in '
-                  'front of it, tail wagging. NO bowl, NO food bowl visible, pure white '
-                  'background.', ', bowl, food bowl, dish, plate'),
+    'eat':       (' It stands in a SIDEWAYS VIEW facing left and eats eagerly from an empty '\
+                  'spot on the ground: repeatedly lowering its head down to the spot and '\
+                  'bobbing, tail wagging gently, body staying in the same spot. NO bowl, NO '\
+                  'food bowl visible, pure white background.',
+                  ', bowl, food bowl, dish, plate, front view, facing camera'),
     # walk/run 侧面视角（走路必须侧面），prompt 加 walking/running in place sideways view
     'walk':      (' It walks in place in a SIDEWAYS VIEW facing right, legs moving in a '
                   'natural trot cycle, body staying in the same spot, tail gently swaying.',
