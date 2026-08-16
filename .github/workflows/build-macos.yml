@@ -1,0 +1,137 @@
+name: build-macos-dmg
+# 模板占位符（全局替换）: 拉布拉多桌面宠物=宠物显示名  LabradorPet=英文名(spec文件名/DMG前缀)  v1=v56式版本号  com.user.labradorpet=bundle标识  labrador_mac.spec=mac spec文件名
+# v56实测验证最终版: 双架构矩阵+ad-hoc签名+一键打开脚本+失败日志推送+Release自动重建
+# 关键：无ad-hoc签名+网络下载quarantine=朋友打开报"已损坏"（右键打开都绕不过），v54教训
+
+on:
+  push:
+    branches: [labrador]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 允许workflow自动创建Release挂DMG公开下载链接
+
+jobs:
+  build:
+    # 矩阵构建：同时产出 Apple Silicon (arm64) 和 Intel (x86_64) 两个DMG
+    strategy:
+      fail-fast: false   # 一个架构失败不影响另一个
+      matrix:
+        include:
+          - runner: macos-15        # Apple Silicon runner
+            arch: arm64
+            release_name: "拉布拉多桌面宠物 v1 (macOS Apple Silicon / M系列芯片)"
+          - runner: macos-15-intel  # Intel runner（GitHub最后一个x86_64镜像，可用至2027年8月）
+            arch: x86_64
+            release_name: "拉布拉多桌面宠物 v1 (macOS Intel)"
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PyQt5==5.15.10 pyinstaller==6.11.1
+
+      - name: Generate .icns app icon (sips为macOS自带，无需PIL)
+        run: |
+          mkdir -p app.iconset
+          sips -z 16 16     icon.png --out app.iconset/icon_16x16.png
+          sips -z 32 32     icon.png --out app.iconset/icon_16x16@2x.png
+          sips -z 32 32     icon.png --out app.iconset/icon_32x32.png
+          sips -z 64 64     icon.png --out app.iconset/icon_32x32@2x.png
+          sips -z 128 128   icon.png --out app.iconset/icon_128x128.png
+          sips -z 256 256   icon.png --out app.iconset/icon_128x128@2x.png
+          sips -z 256 256   icon.png --out app.iconset/icon_256x256.png
+          sips -z 512 512   icon.png --out app.iconset/icon_256x256@2x.png
+          sips -z 512 512   icon.png --out app.iconset/icon_512x512.png
+          sips -z 1024 1024 icon.png --out app.iconset/icon_512x512@2x.png
+          iconutil -c icns app.iconset -o app.icns
+
+      - name: Build .app bundle
+        run: |
+          set -o pipefail
+          echo "架构确认: $(uname -m)"
+          python -m PyInstaller --version
+          python -m PyInstaller labrador_mac.spec --noconfirm --clean 2>&1 | tee pyinstaller.log
+          file "dist/拉布拉多桌面宠物.app/Contents/MacOS/拉布拉多桌面宠物"
+
+      - name: Push build log on failure（失败时日志推到ci-logs分支，公开可读）
+        if: failure()
+        run: |
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git checkout -B ci-logs
+          git add -f pyinstaller.log
+          git commit -m "CI: build failure log (${{ matrix.arch }})" || true
+          git push -f origin ci-logs || true
+
+      - name: Ad-hoc codesign（必须！无签名+quarantine=报"已损坏"打不开。ad-hoc后仅报"无法验证开发者"，一键脚本可绕过）
+        run: |
+          codesign --force --deep --sign - "dist/拉布拉多桌面宠物.app"
+          codesign -dv "dist/拉布拉多桌面宠物.app" 2>&1 | head -5
+
+      - name: 一键打开脚本（朋友双击即用：自动装进Applications+清quarantine+启动）
+        # 关键细节：DMG卷只读，脚本必须先cp到/Applications再xattr，卷内直接清会静默失败
+        run: |
+          cat > "双击打开.command" <<'EOF'
+          #!/bin/bash
+          cd "$(dirname "$0")"
+          SRC="拉布拉多桌面宠物.app"
+          DEST="/Applications/$SRC"
+          if [ ! -d "$DEST" ] && [ -d "$SRC" ]; then
+            cp -R "$SRC" /Applications/ 2>/dev/null || osascript -e "do shell script \"cp -R '$PWD/$SRC' /Applications/\" with administrator privileges" 2>/dev/null
+          fi
+          APP="$DEST"
+          [ -d "$APP" ] || APP="$(pwd)/$SRC"
+          xattr -cr "$APP" 2>/dev/null
+          open "$APP"
+          EOF
+          chmod +x "双击打开.command"
+
+      - name: Package DMG
+        run: |
+          rm -rf dmg_stage
+          mkdir dmg_stage
+          cp -R "dist/拉布拉多桌面宠物.app" dmg_stage/
+          cp "双击打开.command" dmg_stage/
+          chmod +x "dmg_stage/双击打开.command"
+          ln -s /Applications dmg_stage/Applications
+          hdiutil create -volname "拉布拉多桌面宠物" -srcfolder dmg_stage -ov -format UDZO "LabradorPet-v1-macOS-${{ matrix.arch }}.dmg"
+
+      - name: Verify DMG
+        run: |
+          hdiutil verify "LabradorPet-v1-macOS-${{ matrix.arch }}.dmg"
+          ls -lh *.dmg
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pet-macos-dmg-${{ matrix.arch }}
+          path: "LabradorPet-v1-macOS-${{ matrix.arch }}.dmg"
+          retention-days: 30
+
+      - name: Cleanup previous release（重建干净的Release）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete v1-macos-${{ matrix.arch }} --yes --cleanup-tag 2>/dev/null || true
+
+      - name: Create Release（公开下载链接，朋友无需登录即可下载）
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1-macos-${{ matrix.arch }}
+          name: ${{ matrix.release_name }}
+          body: |
+            macOS版安装包（${{ matrix.arch }}架构）。
+            【选哪个版本】苹果菜单 → 关于本机：处理器显示"Apple M1/M2/M3/M4"→下载arm64版；显示"Intel"→下载x86_64版。下错版本会打不开！
+            【安装】双击DMG → 把"拉布拉多桌面宠物"图标拖到Applications文件夹。
+            【首次打开（关键）】打开DMG里的"双击打开.command"（会弹出终端窗口自动处理安全限制并启动）。
+            备选：在访达里右键点击应用→选择"打开"→弹窗里再点"打开"。
+            仍提示"已损坏"：打开终端粘贴执行 xattr -cr /Applications/拉布拉多桌面宠物.app 再双击打开。
+          files: "LabradorPet-v1-macOS-${{ matrix.arch }}.dmg"

@@ -1,0 +1,16 @@
+_raw_*/
+_mats_*/
+frames/
+clean/
+_audit/
+build/
+dist/
+__pycache__/
+*.log
+_videos.log
+_extract.log
+keyhex.txt
+identity_candidates/cand_1.png
+identity_candidates/cand_2.png
+identity_candidates/cand_3.png
+MAC版本/

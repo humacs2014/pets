@@ -1,0 +1,135 @@
+# -*- coding: utf-8 -*-
+"""阶段2: 拉布拉多 16 状态动作视频批量生成（Agnes ti2vid）。
+顺序提交间隔>=70s防限流，每个提交后轮询至完成下载。后台运行。
+用法: python regen_videos.py [状态名...]（默认全部）
+"""
+import sys, os, time, json, base64
+import requests
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+
+# ══════════ CONFIG（拉布拉多） ══════════
+KEYHEX = os.path.join(ROOT, 'keyhex.txt')
+REF_IMAGE = os.path.join(ROOT, 'identity_candidates', 'cand_0.png')  # 身份参考图(视觉10/10)
+SUBJ = 'A tiny cute fluffy Yellow Labrador puppy with warm brown eyes.'
+VIDEOS_DIR = os.path.join(ROOT, 'videos')
+
+COMMON = (' The subject stays perfectly centered in the same spot the whole time, not moving '
+          'forward at all. Extreme wide shot, the subject takes up less than 40 percent of the '
+          'frame height with lots of empty white space around it. Static locked camera, pure '
+          'white seamless studio background, soft even lighting, photorealistic, sharp crisp '
+          'fur detail.')
+NEG_BASE = ('cartoon, childish, ugly, extra legs, extra tail, deformed, mutated, subtitles, '
+            'watermark, text, logo, blurry, jittery, distorted, inconsistent appearance, '
+            'other animals, human, person, cropped, cut off, close up, zoomed in, filling frame, '
+            'large subject, moving forward, walking forward, changing position, '
+            'adult dog, husky, gray fur, black fur, chocolate color')
+
+ACTIONS = {
+    'idle':      (' It stands on all four paws facing slightly to the side, gently swaying, '
+                  'looking around curiously with occasional small head tilts and ear twitches.', ''),
+    'sit':       (' It calmly sits down facing the camera, tail curled around its paws, '
+                  'breathing gently with occasional ear twitches.', ''),
+    'sleep':     (' It sits upright, yawns sleepily, then slowly lies down COMPLETELY on its '
+                  'side: body fully horizontal on the ground, all four legs stretched out and '
+                  'splayed apart in a deeply relaxed way, eyes closed, deep sleep with slow '
+                  'gentle breathing, chest rising and falling, head resting on the ground, '
+                  'mouth closed. It remains fully side-lying until the end.',
+                  ', curled up into a ball, loaf position, sphinx position, paws tucked under '
+                  'body, standing up at the end, getting back up, head up, mouth open, tongue '
+                  'out, panting'),
+    'bark':      (' It stands and barks loudly several times: mouth opening and closing '
+                  'rhythmically, head lifting with each bark, body energetic.', ''),
+    'lick':      (' It sits and grooms itself: turns its head to lick its own front paw and '
+                  'shoulder fur with visible tongue movements, licks repeatedly in a natural '
+                  'self-grooming rhythm, occasionally pausing and resuming.', ''),
+    'happy':     (' It jumps up and down joyfully with excitement, wagging its tail rapidly, '
+                  'bouncing in place.', ''),
+    'roll':      (' It stands, then deliberately lies down and rolls over onto its back with '
+                  'legs in the air, wriggling around happily, then sits back up.', ''),
+    'dance':     (' It dances playfully on its hind legs, stepping and bouncing rhythmically '
+                  'in place.', ''),
+    'stretch':   (' It performs a full body stretch: lowering its front chest to the ground '
+                  'with front paws extended forward, rear end up, then slowly standing back up.', ''),
+    'beg':       (' It stands up on its hind legs, raising both front paws in a begging pose, '
+                  'balancing gently and looking up expectantly.', ''),
+    'bath':      (' It sits and gets washed, water splashing gently around it, shaking off '
+                  'water with ripples.', ', hand, hands, fingers'),
+    'surprised': (' It sits calmly facing the camera, then suddenly gets startled and reacts '
+                  'surprised: ears perk straight up, eyes go wide open, mouth opens, head jerks '
+                  'back slightly, body recoils and does a small hop, then stays sitting with a '
+                  'wide-eyed alert surprised expression. NO human, NO hands, the puppy is '
+                  'completely alone.', ', hand, hands, fingers, arm'),
+    'play_dead': (' It flops down onto its side and lies completely still, pretending to be '
+                  'dead with relaxed legs.', ''),
+    'eat':       (' It stands and eats eagerly, head bobbing down toward an empty spot in '
+                  'front of it, tail wagging. NO bowl, NO food bowl visible, pure white '
+                  'background.', ', bowl, food bowl, dish, plate'),
+    # walk/run 侧面视角（走路必须侧面），prompt 加 walking/running in place sideways view
+    'walk':      (' It walks in place in a SIDEWAYS VIEW facing right, legs moving in a '
+                  'natural trot cycle, body staying in the same spot, tail gently swaying.',
+                  ', front view, facing camera'),
+    'run':       (' It runs in place in a SIDEWAYS VIEW facing right, legs galloping fast in a '
+                  'natural run cycle, body staying in the same spot, ears and fur flowing.',
+                  ', front view, facing camera'),
+}
+# ══════════ CONFIG END ══════════
+
+BASE = 'https://api.agnes-ai.cn/v1'
+tok = bytes.fromhex(open(KEYHEX).read().strip()).decode()
+HDR = {'Authorization': tok, 'Content-Type': 'application/json'}  # 裸key勿加Bearer
+
+def submit(prompt, neg):
+    img = base64.b64encode(open(REF_IMAGE, 'rb').read()).decode()
+    r = requests.post(f'{BASE}/video/generations', headers=HDR, json={
+        'model': 'agnes-video-v2.0', 'prompt': prompt, 'negative_prompt': neg,
+        'image': f'data:image/png;base64,{img}',
+        'num_frames': 121, 'frame_rate': 24}, timeout=180)
+    if r.status_code != 200:
+        return None, r.text[:300]
+    d = r.json()
+    return d.get('video_id') or d.get('task_id'), None
+
+def poll(video_id, timeout_s=1800):
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        try:
+            d = requests.get('https://api.agnes-ai.cn/agnesapi', params={'video_id': video_id},
+                             headers={'Authorization': tok}, timeout=60).json()
+        except Exception:
+            time.sleep(15); continue
+        st = (d.get('status') or '').lower()
+        if st == 'completed':
+            return d.get('url'), None
+        if st == 'failed':
+            return None, json.dumps(d.get('error'), ensure_ascii=False)[:300]
+        print(f'    {st} {d.get("progress", "")}%', flush=True)
+        time.sleep(20)
+    return None, 'poll timeout'
+
+if __name__ == '__main__':
+    os.makedirs(VIDEOS_DIR, exist_ok=True)
+    done = {f.replace('.mp4', '') for f in os.listdir(VIDEOS_DIR) if f.endswith('.mp4')}
+    only = sys.argv[1:] or list(ACTIONS)
+    n = len([x for x in only if x not in done])
+    print(f'[start] {n} videos to generate', flush=True)
+    k = 0
+    for name in only:
+        if name in done:
+            print(f'[skip] {name} 已存在', flush=True); continue
+        k += 1
+        if k > 1:
+            print('  ... waiting 70s for rate limit ...', flush=True)
+            time.sleep(70)
+        desc, extra_neg = ACTIONS[name]
+        vid, err = submit(SUBJ + desc + COMMON, NEG_BASE + extra_neg)
+        if not vid:
+            print(f'[FAIL submit] {name}: {err}', flush=True); continue
+        print(f'[submit] {name} video_id={vid}', flush=True)
+        url, err = poll(vid)
+        if not url:
+            print(f'[FAIL poll] {name}: {err}', flush=True); continue
+        r = requests.get(url, timeout=300)
+        open(os.path.join(VIDEOS_DIR, name + '.mp4'), 'wb').write(r.content)
+        print(f'  SAVED {name}.mp4 ({len(r.content)} bytes)', flush=True)
+    print('VIDEOS_DONE', flush=True)
