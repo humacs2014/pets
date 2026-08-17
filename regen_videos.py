@@ -14,11 +14,12 @@ REF_IMAGE = os.path.join(ROOT, 'identity_candidates', 'cand_0.png')  # 身份参
 SUBJ = 'A tiny cute fluffy Yellow Labrador puppy with warm brown eyes.'
 VIDEOS_DIR = os.path.join(ROOT, 'videos')
 
-COMMON = (' The subject stays perfectly centered in the same spot the whole time, not moving '
-          'forward at all. Extreme wide shot, the subject takes up less than 40 percent of the '
-          'frame height with lots of empty white space around it. Static locked camera, pure '
-          'white seamless studio background, soft even lighting, photorealistic, sharp crisp '
-          'fur detail.')
+COMMON = (' The subject stays perfectly centered in the same spot the whole time, not moving '\
+          'forward at all. Extreme wide shot, the subject takes up less than 40 percent of the '\
+          'frame height with lots of empty white space around it. Even when lying down, the '\
+          'body never becomes wider than 55 percent of the frame width. Static locked camera, '\
+          'pure white seamless studio background, soft even lighting, photorealistic, sharp '\
+          'crisp fur detail.')
 NEG_BASE = ('cartoon, childish, ugly, extra legs, extra tail, deformed, mutated, subtitles, '
             'watermark, text, logo, blurry, jittery, distorted, inconsistent appearance, '
             'other animals, human, person, cropped, cut off, close up, zoomed in, filling frame, '
@@ -38,14 +39,16 @@ ACTIONS = {
                   'stance, legs apart, five legs, six legs, extra legs'),
     'sit':       (' It calmly sits down facing the camera, tail curled around its paws, '
                   'breathing gently with occasional ear twitches.', ''),
-    'sleep':     (' It sits upright, yawns sleepily, then slowly lies down COMPLETELY on its '
-                  'side: body fully horizontal on the ground, all four legs stretched out and '
-                  'splayed apart in a deeply relaxed way, eyes closed, deep sleep with slow '
-                  'gentle breathing, chest rising and falling, head resting on the ground, '
-                  'mouth closed. It remains fully side-lying until the end.',
-                  ', curled up into a ball, loaf position, sphinx position, paws tucked under '
-                  'body, standing up at the end, getting back up, head up, mouth open, tongue '
-                  'out, panting'),
+    'sleep':     (' Seen in an EXACT SIDE PROFILE VIEW the whole time, it sits down compactly '\
+                  'with the hind legs tucked under the body, yawns sleepily, then slowly curls '\
+                  'down into a compact relaxed ball on the ground: legs folded CLOSE under the '\
+                  'body, tail wrapped around, head resting low, the lying body small and '\
+                  'compact. Eyes closed, deep sleep with slow gentle breathing, chest rising '\
+                  'and falling. It remains curled and compact until the end.',
+                  ', splayed legs, legs stretched out wide, legs apart, wide stance, body '\
+                  'stretched out long, sprawling flat, lying elongated, front view, facing '\
+                  'camera, both eyes visible, chest toward camera, standing up at the end, '\
+                  'getting back up, head up, mouth open, tongue out, panting'),
     'bark':      (' It stands in an EXACT SIDE PROFILE VIEW facing right: muzzle points right, '\
                   'only ONE eye visible, tail on the left, four legs straight down and clearly '\
                   'separated, the two hind legs close together and parallel. It barks loudly '\

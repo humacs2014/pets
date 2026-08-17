@@ -75,8 +75,9 @@ def nose_of(dog):
 
 noses_full = {i: nose_of(dogs_full[i]) for i in valid}
 nys = np.array([noses_full[i][1] for i in valid if noses_full[i]])
-# 2026-08-17 v4: p60被舔食节奏振荡切成5-6帧短段; p25=抬头intro与吃食相的分界→整段吃食连续
-dip_thr = np.percentile(nys, 25)
+# 2026-08-17 v5: p25把低头下探过渡帧(嘴在胸高y≈380-470)混入吃食段→输出开头嘴浮碗上。
+# 轨迹实测: 抬头y≈350/过渡380-500/深吃600-635 → p50=深吃下沿, 只收嘴真正到碗位的帧。
+dip_thr = np.percentile(nys, 50)
 low_mask = [noses_full[i] is not None and noses_full[i][1] >= dip_thr for i in valid]
 # 最长连续低头段
 best_a, best_l, a, l = 0, 0, 0, 0
@@ -89,9 +90,16 @@ for t, o in enumerate(low_mask):
         a, l = t + 1, 0
 assert best_l >= NFR, f'低头段仅{best_l}帧 < {NFR}——视频本身没持续低头吃食，需重生成'
 seg = valid[best_a:best_a + best_l]
+# 2026-08-17 v6: seg两端含过渡帧(尾实测: 90-96超低头y664-731=前踏异常姿, 97-99抬头
+# y572-640; 也>=全局p50)→输出首尾帧嘴离碗。舔食振荡±20px不能取连续子段,
+# 改双向trim: seg内只留y∈[p10,p90]带(深吃振荡主体597-635), 余下均匀重采样。
+seg_nys = np.array([noses_full[i][1] for i in seg])
+lo_thr, hi_thr = np.percentile(seg_nys, 10), np.percentile(seg_nys, 90)
+seg = [i for i in seg if lo_thr <= noses_full[i][1] <= hi_thr]
+assert len(seg) >= NFR, f'trim后仅{len(seg)}帧 < {NFR}'
 print('head-down segment: %d frames (of %d valid), skipping %d head-up leading/trailing' %
       (best_l, len(valid), len(valid) - best_l), flush=True)
-idxs = [int(round(seg[0] + k * (seg[-1] - seg[0]) / (NFR - 1))) for k in range(NFR)]
+idxs = [seg[int(round(k * (len(seg) - 1) / (NFR - 1)))] for k in range(NFR)]
 dogs = [dogs_full[i] for i in idxs]
 noses = [noses_full[i] for i in idxs]
 noses = [n for n in noses if n]

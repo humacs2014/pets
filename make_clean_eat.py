@@ -16,7 +16,7 @@ fps = extract('eat')
 if not fps:
     raise SystemExit('no eat.mp4 frames')
 mats = cutout_frames(fps, 'eat_clean')   # 返回 mat 文件路径列表
-n = 0
+n_written = 0
 for k, p in enumerate(mats):
     im = Image.open(p).convert('RGBA')
     a = np.array(im)
@@ -26,6 +26,14 @@ for k, p in enumerate(mats):
     if not _standing_leg_ok(a[..., 3]):
         print(f'  skip c_{k:03d}: splayed/front-view legs', flush=True)
         continue
+    # 2026-08-17 v2: 只保留最大连通域——抠图残留粮渣(实测49/121帧有碎片,
+    # 最大3246px=用户截图脚边粮堆)烤进assets成永久粮堆
+    from scipy import ndimage
+    lab, n = ndimage.label(a[..., 3] > 40)
+    if n > 1:
+        keep = np.argmax(ndimage.sum(a[..., 3] > 40, lab, range(1, n + 1))) + 1
+        a[..., 3] = np.where(lab == keep, a[..., 3], 0)
+        im = Image.fromarray(a, 'RGBA')
     im.save(os.path.join(OUT, f'c_{k:03d}.png'))
-    n += 1
-print(f'WROTE {n} clean frames → clean/c_*.png')
+    n_written += 1
+print(f'WROTE {n_written} clean frames → clean/c_*.png')
