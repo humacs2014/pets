@@ -42,6 +42,8 @@ assert len(valid) >= NFR, f'only {len(valid)} valid frames < {NFR}'
 hs_all = [ms[i][3] - ms[i][1] + 1 for i in valid]
 SCALE = min(DOG_H_ANCHOR / float(np.percentile(hs_all, 90)), DOG_SCALE_CAP)
 
+FOOT_Y = 490  # 脚部锚定线: 每帧脚底像素对齐此线(旧530越界裁脚18px+水平bbox居中→
+              # 抬头/低头高度变化=狗不停晃动)。水平用脚部行带中心而非全bbox(头摆不影响)。
 def build_dog(i):
     m = ms[i]
     im = Image.open(cleaned[i]).convert('RGBA').crop((m[0], m[1], m[2] + 1, m[3] + 1))
@@ -49,8 +51,13 @@ def build_dog(i):
     if tw > 500:
         tw, th = 500, max(1, int(th * 500 / tw))
     im = im.resize((tw, th), Image.LANCZOS)
+    a = np.array(im)[:, :, 3]
+    ys, xs = np.where(a > 40)
+    y75 = ys.min() + int((ys.max() - ys.min()) * 0.75)   # 底部25%行带=脚部
+    feet = xs[ys >= y75]
+    cx = int((feet.min() + feet.max()) / 2)
     canvas = Image.new('RGBA', (512, 512), (0, 0, 0, 0))
-    canvas.paste(im, ((512 - tw) // 2, 504 + 26 - th), im.split()[3])
+    canvas.paste(im, (256 - cx, FOOT_Y - th + 1), im.split()[3])
     return canvas
 
 # 2026-08-17 v3: 全valid帧先算鼻尖, 只取最长连续低头段重采样→帧0不再混入抬头帧

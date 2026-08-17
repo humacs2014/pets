@@ -91,6 +91,18 @@ def fix_frame(a):
                 out[m, 3] = 0
     return out
 
+def save_retry(im, fp, tries=5):
+    """Windows下杀软/索引瞬时锁文件→OSError 22; 重试退避解决。"""
+    import time
+    for t in range(tries):
+        try:
+            im.save(fp)
+            return
+        except OSError:
+            if t == tries - 1:
+                raise
+            time.sleep(0.5 * (t + 1))
+
 def main():
     states = sys.argv[1:] or sorted({os.path.basename(f).rsplit('_', 1)[0]
                                      for f in glob.glob(f'{ASSETS}/*_*.png')
@@ -103,7 +115,7 @@ def main():
             a = np.asarray(im)
             o = fix_frame(a)
             if not np.array_equal(a, o):
-                Image.fromarray(o, 'RGBA').save(fp)
+                save_retry(Image.fromarray(o, 'RGBA'), fp)
                 tot += 1
         print(f'{st:12s} {len(fs):3d}帧 fixed', flush=True)
     print(f'TOTAL fixed frames: {tot}', flush=True)

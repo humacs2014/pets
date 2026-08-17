@@ -4,7 +4,7 @@ from PIL import Image
 
 def grid(st):
     fs = sorted(glob.glob(f'assets/{st}_*.png'),
-                key=lambda p: int(os.path.basename(p).split('_')[1].split('.')[0]))
+                key=lambda p: int(os.path.basename(p).rsplit('_', 1)[1].split('.')[0]))
     n = len(fs)
     if n == 0:
         print(f'{st}: no assets'); return

@@ -114,6 +114,16 @@ ACTIONS = {
                   'bouncing in place, treadmill, belt, black strip, dark strip, platform, '\
                   'machine, prop, object on floor, gray smudge, gray blob, gray stripe'),
 }
+# 2026-08-17: 用户反馈roll/dance/sleep等开头站姿=旧奇怪后腿主体。idle/bark的修腿
+# 措辞未覆盖其余含站立段的状态→统一追加(正+负)。
+LEGS_POS = (' Whenever the puppy stands or rises on its legs, all four legs are straight down '\
+            'and clearly separated, the two hind legs close together and parallel, never '\
+            'splayed wide or twisted.')
+LEGS_NEG = (', splayed legs, wide stance, legs apart, five legs, six legs, extra legs, '\
+            'splayed hind legs, twisted legs, unnatural legs')
+for _k in ('sleep', 'roll', 'dance', 'stretch', 'happy', 'beg', 'play_dead', 'eat'):
+    _d, _n = ACTIONS[_k]
+    ACTIONS[_k] = (_d + LEGS_POS, _n + LEGS_NEG)
 # ══════════ CONFIG END ══════════
 
 BASE = 'https://api.agnes-ai.cn/v1'
