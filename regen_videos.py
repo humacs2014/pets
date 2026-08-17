@@ -67,13 +67,27 @@ ACTIONS = {
                   'bobbing, tail wagging gently, body staying in the same spot. NO bowl, NO '\
                   'food bowl visible, pure white background.',
                   ', bowl, food bowl, dish, plate, front view, facing camera'),
-    # walk/run 侧面视角（走路必须侧面），prompt 加 walking/running in place sideways view
-    'walk':      (' It walks in place in a SIDEWAYS VIEW facing right, legs moving in a '
-                  'natural trot cycle, body staying in the same spot, tail gently swaying.',
-                  ', front view, facing camera'),
-    'run':       (' It runs in place in a SIDEWAYS VIEW facing right, legs galloping fast in a '
-                  'natural run cycle, body staying in the same spot, ears and fur flowing.',
-                  ', front view, facing camera'),
+    # walk/run 侧面视角+跑步机范式:位置锁定但腿必须大幅完整步态(旧'in place'措辞
+    # 被AI读成压制腿幅=原地踏步,v2修正)
+    'walk':      (' It walks on a treadmill in a SIDEWAYS VIEW facing right, performing a FULL '\
+                  'natural trot gait cycle with large clear strides: diagonal legs alternating, '\
+                  'each paw lifting well off the ground, visible leg extension and fold every '\
+                  'step, brisk energetic walk, tail gently swaying, body holding the same screen '\
+                  'position the whole time.',
+                  ', front view, facing camera, standing still, static legs, stiff legs, locked '\
+                  'legs, tiny steps, shuffling, legs together'),
+    # run v4: v3纯白地面修黑皮带, 但tuck相位渲染出后腿间灰色条纹残块(v3 QA发现)→加NEG+毛色统一正述
+    'run':       (' It runs in a SIDEWAYS VIEW facing right on the pure white studio floor, '
+                  'performing a FULL gallop cycle: legs stretching far forward and far backward, '
+                  'a clear suspension moment with all four paws off the ground, then legs tucking '
+                  'under the body, large powerful energetic strides, ears and fur flowing, body '
+                  'holding the same screen position the whole time. The floor stays pure white '
+                  'and completely empty, nothing else in the scene. The coat is clean uniform '
+                  'golden cream fur on every part of the body including the tucked legs and belly.',
+                  ', front view, facing camera, standing still, static legs, stiff legs, locked '
+                  'legs, tiny steps, shuffling, legs together, treadmill, belt, black strip, '
+                  'dark strip, platform, machine, equipment, prop, object on floor, gray smudge, '
+                  'gray blob, gray stripe, gray artifact, discolored patch, stray fur patch'),
 }
 # ══════════ CONFIG END ══════════
 

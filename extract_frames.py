@@ -61,6 +61,11 @@ def extract(name):
             return None
         mp4 = mp4s[0]
     fd = os.path.join(ROOT, '_raw_' + name)
+    # 新鲜度铁律: 视频比缓存新 → 旧视频缓存必须作废(2026-08-17 walk/run 重生成被缓存短路事故)
+    if os.path.isdir(fd) and os.path.getmtime(mp4) > os.path.getmtime(fd):
+        import shutil
+        shutil.rmtree(fd)
+        print(f'  [cache invalid] _raw_{name} older than video, re-extracting', flush=True)
     os.makedirs(fd, exist_ok=True)
     if len(glob.glob(os.path.join(fd, 'f_*.png'))) < 10:
         subprocess.run(['ffmpeg', '-y', '-v', 'error', '-i', mp4,
@@ -71,6 +76,13 @@ def extract(name):
 def cutout_frames(fps, state):
     """isnet-general-use 抠图（白底/白毛必须用此模型；u2net 液化白色头部）。"""
     mats_dir = os.path.join(ROOT, '_mats_' + state)
+    mp4 = os.path.join(VIDS_DIR, state + '.mp4')
+    # 新鲜度铁律: 视频比抠图缓存新 → 旧mask作废(与_raw同事故, 见extract)
+    if os.path.isdir(mats_dir) and os.path.exists(mp4) and \
+            os.path.getmtime(mp4) > os.path.getmtime(mats_dir):
+        import shutil
+        shutil.rmtree(mats_dir)
+        print(f'  [cache invalid] _mats_{state} older than video, re-cutting', flush=True)
     os.makedirs(mats_dir, exist_ok=True)
     existing = sorted(glob.glob(os.path.join(mats_dir, 'm_*.png')))
     if len(existing) >= len(fps):
@@ -109,6 +121,37 @@ def alpha_metrics(mat):
     # 脚触底正常；只拒顶/左/右边缘接触（真裁切风险）
     edge = x1 >= W - 4 or x0 <= 3 or y0 <= 3
     return {'main_frac': main_frac, 'edge': edge, 'area': int(total)}
+
+def motion_scores(mats):
+    """逐帧alpha差均值=运动量。站立intro≈0，步态相位大。"""
+    prev, out = None, []
+    for m in mats:
+        a = np.array(Image.open(m).convert('RGBA'))[:, :, 3].astype(np.float32)
+        if prev is not None:
+            out.append(float(np.mean(np.abs(a - prev))))
+        prev = a
+    out.append(out[-1] if out else 0.0)
+    return np.array(out)
+
+def gait_window(mats, min_len=8):
+    """walk/run专用: 放宽面积容差(步态伸展/收拢面积差大), 在干净段里选运动量最大的窗口。
+    2026-08-17事故: clean_window最长段选中站立intro而非奔跑段。"""
+    ms = [alpha_metrics(m) for m in mats]
+    areas = np.array([m['area'] for m in ms])
+    med = np.median(areas[areas > 0]) if (areas > 0).any() else 1
+    ok = [m['main_frac'] >= 0.99 and not m['edge']
+          and abs(m['area'] - med) / max(med, 1) <= 0.45 and m['area'] > 800
+          for m in ms]
+    runs, s = [], 0
+    for i in range(len(ok) + 1):
+        if i == len(ok) or not ok[i]:
+            if i - s >= min_len:
+                runs.append((s, i))
+            s = i + 1
+    if not runs:
+        return None
+    mot = motion_scores(mats)
+    return max(runs, key=lambda r: float(np.mean(mot[r[0]:r[1]])) * (r[1] - r[0]) ** 0.3)
 
 def clean_window(mats):
     """逐帧打分（主CC占比≥0.999、无顶左右边缘、面积偏差≤25%、面积>1000），取最长连续干净段。"""
@@ -232,8 +275,17 @@ def process_state(name):
         sel = [m for m, t in zip(mats, ms) if not t['edge'] and t['area'] > 1000]
         print(f'  transition: kept {len(sel)}/{len(mats)}', flush=True)
     else:
-        s, e, nclean, ntot = clean_window(mats)
-        print(f'  clean window [{s}:{e}] len={e-s} ({nclean}/{ntot} ok)', flush=True)
+        if name in ('walk', 'run'):
+            gw = gait_window(mats)
+            if gw:
+                s, e = gw
+                print(f'  gait window [{s}:{e}] len={e-s} (motion-selected)', flush=True)
+            else:
+                s, e, _, _ = clean_window(mats)
+                print(f'  gait window fallback [{s}:{e}]', flush=True)
+        else:
+            s, e, nclean, ntot = clean_window(mats)
+            print(f'  clean window [{s}:{e}] len={e-s} ({nclean}/{ntot} ok)', flush=True)
         if e - s < 4:
             print('  TOO FEW, skip', flush=True); return
         sel = mats[s:e]
