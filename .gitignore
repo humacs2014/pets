@@ -14,3 +14,7 @@ identity_candidates/cand_1.png
 identity_candidates/cand_2.png
 identity_candidates/cand_3.png
 MAC版本/
+_qa_*.png
+_qaraw_*/
+_tmp_*.png
+_nose_grid.png

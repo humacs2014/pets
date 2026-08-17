@@ -26,8 +26,15 @@ NEG_BASE = ('cartoon, childish, ugly, extra legs, extra tail, deformed, mutated,
             'adult dog, husky, gray fur, black fur, chocolate color')
 
 ACTIONS = {
-    'idle':      (' It stands on all four paws facing slightly to the side, gently swaying, '
-                  'looking around curiously with occasional small head tilts and ear twitches.', ''),
+    'idle':      (' It stands in an EXACT SIDE PROFILE VIEW facing right: the muzzle points to '\
+                  'the right, only ONE eye is visible, the tail extends to the left. All four '\
+                  'legs straight down and clearly separated, the two hind legs close together '\
+                  'and parallel, never splayed wide. The head stays in profile the whole time: '\
+                  'it looks around by turning slightly within the side plane only, NEVER turning '\
+                  'toward the camera, occasional small ear twitches, gently swaying.',
+                  ', head turned to camera, looking at viewer, both eyes visible, facing camera, '\
+                  'front view, three quarter view, splayed legs, wide stance, legs apart, five '\
+                  'legs, six legs, extra legs'),
     'sit':       (' It calmly sits down facing the camera, tail curled around its paws, '
                   'breathing gently with occasional ear twitches.', ''),
     'sleep':     (' It sits upright, yawns sleepily, then slowly lies down COMPLETELY on its '
@@ -38,8 +45,15 @@ ACTIONS = {
                   ', curled up into a ball, loaf position, sphinx position, paws tucked under '
                   'body, standing up at the end, getting back up, head up, mouth open, tongue '
                   'out, panting'),
-    'bark':      (' It stands and barks loudly several times: mouth opening and closing '
-                  'rhythmically, head lifting with each bark, body energetic.', ''),
+    'bark':      (' It stands in an EXACT SIDE PROFILE VIEW facing right: muzzle points right, '\
+                  'only ONE eye visible, tail on the left, four legs straight down and clearly '\
+                  'separated, the two hind legs close together and parallel. It barks loudly '\
+                  'several times while staying in profile: mouth opening and closing rhythmically '\
+                  'with the muzzle still pointing right, head lifting slightly with each bark, '\
+                  'body energetic. The head NEVER turns toward the camera.',
+                  ', head turned to camera, looking at viewer, both eyes visible, facing camera, '\
+                  'front view, three quarter view, splayed legs, wide stance, five legs, six '\
+                  'legs, extra legs'),
     'lick':      (' It sits and grooms itself: turns its head to lick its own front paw and '
                   'shoulder fur with visible tongue movements, licks repeatedly in a natural '
                   'self-grooming rhythm, occasionally pausing and resuming.', ''),
@@ -62,32 +76,43 @@ ACTIONS = {
                   'completely alone.', ', hand, hands, fingers, arm'),
     'play_dead': (' It flops down onto its side and lies completely still, pretending to be '
                   'dead with relaxed legs.', ''),
-    'eat':       (' It stands in a SIDEWAYS VIEW facing left and eats eagerly from an empty '\
-                  'spot on the ground: repeatedly lowering its head down to the spot and '\
-                  'bobbing, tail wagging gently, body staying in the same spot. NO bowl, NO '\
-                  'food bowl visible, pure white background.',
-                  ', bowl, food bowl, dish, plate, front view, facing camera'),
+    'eat':       (' It stands in an EXACT SIDE PROFILE VIEW facing right: only ONE eye is '\
+                  'visible, the tail extends to the left, the whole body seen fully from the '\
+                  'side. It lowers its head to the floor IN PROFILE: the muzzle points down-'\
+                  'right and touches the white floor at floor level, still only one eye '\
+                  'visible while eating. It eagerly eats kibble scattered on the white floor '\
+                  'right in front of its chest, chewing and bobbing at floor level 80 percent '\
+                  'of the time, lifting the head only briefly then returning to eat, tail '\
+                  'wagging gently, body staying in the same spot. NO bowl, NO food bowl '\
+                  'visible, pure white background.',
+                  ', bowl, food bowl, dish, plate, front view, facing camera, both eyes '\
+                  'visible, three quarter view, head up, looking around, standing alert, '\
+                  'sniffing air, head turned to camera, looking at viewer'),
     # walk/run 侧面视角+跑步机范式:位置锁定但腿必须大幅完整步态(旧'in place'措辞
     # 被AI读成压制腿幅=原地踏步,v2修正)
     'walk':      (' It walks on a treadmill in a SIDEWAYS VIEW facing right, performing a FULL '\
                   'natural trot gait cycle with large clear strides: diagonal legs alternating, '\
                   'each paw lifting well off the ground, visible leg extension and fold every '\
-                  'step, brisk energetic walk, tail gently swaying, body holding the same screen '\
-                  'position the whole time.',
+                  'step, hind legs moving naturally and staying close under the body, brisk '\
+                  'energetic walk, tail gently swaying, body holding the same screen position '\
+                  'the whole time.',
                   ', front view, facing camera, standing still, static legs, stiff legs, locked '\
-                  'legs, tiny steps, shuffling, legs together'),
-    # run v4: v3纯白地面修黑皮带, 但tuck相位渲染出后腿间灰色条纹残块(v3 QA发现)→加NEG+毛色统一正述
-    'run':       (' It runs in a SIDEWAYS VIEW facing right on the pure white studio floor, '
-                  'performing a FULL gallop cycle: legs stretching far forward and far backward, '
-                  'a clear suspension moment with all four paws off the ground, then legs tucking '
-                  'under the body, large powerful energetic strides, ears and fur flowing, body '
-                  'holding the same screen position the whole time. The floor stays pure white '
-                  'and completely empty, nothing else in the scene. The coat is clean uniform '
-                  'golden cream fur on every part of the body including the tucked legs and belly.',
-                  ', front view, facing camera, standing still, static legs, stiff legs, locked '
-                  'legs, tiny steps, shuffling, legs together, treadmill, belt, black strip, '
-                  'dark strip, platform, machine, equipment, prop, object on floor, gray smudge, '
-                  'gray blob, gray stripe, gray artifact, discolored patch, stray fur patch'),
+                  'legs, tiny steps, shuffling, legs together, splayed hind legs, twisted legs, '\
+                  'unnatural legs, gray smudge, gray blob'),
+    # run v5: v4的loop段幅度不足(前爪hop为主、缺完整伸展 strides)→"同一姿势循环"。
+    # 改持续全速大步幅gallop, NEG hop/站立
+    'run':       (' It runs at FULL SPEED in a SIDEWAYS VIEW facing right on the pure white '\
+                  'studio floor, performing CONTINUOUS large-amplitude gallop strides without '\
+                  'pause: every single stride the legs stretch far forward and far backward, '\
+                  'a clear suspension moment with all four paws off the ground, then legs '\
+                  'tucking under the body, stride after stride at the same big amplitude, '\
+                  'powerful energetic sprint, ears and fur flowing, body holding the same '\
+                  'screen position the whole time. The floor stays pure white and completely '\
+                  'empty. The coat is clean uniform golden cream fur on every part of the body.',
+                  ', front view, facing camera, standing still, standing, static legs, stiff '\
+                  'legs, locked legs, tiny steps, shuffling, legs together, hopping, hop, '\
+                  'bouncing in place, treadmill, belt, black strip, dark strip, platform, '\
+                  'machine, prop, object on floor, gray smudge, gray blob, gray stripe'),
 }
 # ══════════ CONFIG END ══════════
 

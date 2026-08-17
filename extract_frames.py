@@ -153,6 +153,37 @@ def gait_window(mats, min_len=8):
     mot = motion_scores(mats)
     return max(runs, key=lambda r: float(np.mean(mot[r[0]:r[1]])) * (r[1] - r[0]) ** 0.3)
 
+PROFILE_STATES = {'idle': 'high', 'bark': 'high', 'sit': 'low'}
+
+def posture_window(mats, min_len=16, mode='high'):
+    """按姿态宽高比选窗: mode='high'站立态选纯侧身段(跳3/4正面intro);
+    mode='low'坐姿选稳坐段(跳站姿intro)。
+    2026-08-17事故: idle intro 3/4正面→多腿错觉; sit intro站姿帧→引擎站↔坐跳变。"""
+    ok, ars = [], []
+    for m in mats:
+        a = np.array(Image.open(m).convert('RGBA'))[:, :, 3]
+        ys, xs = np.where(a > 30)
+        if len(xs) == 0:
+            ok.append(False); ars.append(0.0); continue
+        ok.append(True)
+        ars.append((xs.max() - xs.min() + 1) / (ys.max() - ys.min() + 1))
+    ars = np.array(ars)
+    sm = np.array([np.median(ars[max(0, i - 2):i + 3]) for i in range(len(ars))])
+    oka = np.array(ok)
+    pct = np.percentile(sm[oka], 45) if mode == 'high' else np.percentile(sm[oka], 55)
+    good = oka & (sm >= pct if mode == 'high' else sm <= pct)
+    best_s, best_l, s, l = 0, 0, 0, 0
+    for i in range(len(good) + 1):
+        if i == len(good) or not good[i]:
+            if l > best_l:
+                best_l, best_s = l, s
+            s, l = i + 1, 0
+        else:
+            l += 1
+    if best_l < min_len:
+        return None
+    return best_s, best_s + best_l
+
 def clean_window(mats):
     """逐帧打分（主CC占比≥0.999、无顶左右边缘、面积偏差≤25%、面积>1000），取最长连续干净段。"""
     ms = [alpha_metrics(m) for m in mats]
@@ -263,6 +294,32 @@ def find_loop_pair(frames, min_span_frac=0.33):
                 best = (i, j, d)
     return best
 
+def find_gait_loop(frames, min_span_frac=0.28, max_span_frac=0.75):
+    """walk/run 步态循环: 自相关找周期T(完整步态周期=相似度峰值), 再相位对齐起点。
+    2026-08-17事故: find_loop_pair选到半周期→loop=半步→"同一姿势循环"无跑动感。
+    min_span=0.28: 24fps幼犬gallop周期≈12-18帧, 低于此的T是半周期假谷(v1实测T=9=半步)。"""
+    arrs = np.array([np.array(f)[:, :, 3].astype(np.float32) for f in frames])
+    n = len(arrs)
+    min_span = max(4, int(n * min_span_frac))
+    max_span = min(n - 2, int(n * max_span_frac))
+    best_T, best_score = min_span, 1e18
+    scores = {}
+    for T in range(min_span, max_span + 1):
+        ds = np.array([np.mean(np.abs(arrs[i] - arrs[i + T])) for i in range(n - T)])
+        scores[T] = float(ds.mean())
+    # 局部极小优先(周期峰值), 避免大T假最小
+    cands = [T for T in range(min_span + 1, max_span)
+             if scores[T] <= scores[T - 1] and scores[T] <= scores[T + 1]]
+    if cands:
+        best_T = min(cands, key=lambda T: scores[T])
+    else:
+        best_T = min(scores, key=scores.get)
+    best_score = scores[best_T]
+    T = best_T
+    i0 = int(min(range(n - T), key=lambda i: np.mean(np.abs(arrs[i] - arrs[i + T]))))
+    print(f'  gait loop: period T={T} start={i0} score={best_score:.1f}', flush=True)
+    return i0, i0 + T
+
 def process_state(name):
     print(f'== {name} ==', flush=True)
     fps = extract(name)
@@ -286,6 +343,12 @@ def process_state(name):
         else:
             s, e, nclean, ntot = clean_window(mats)
             print(f'  clean window [{s}:{e}] len={e-s} ({nclean}/{ntot} ok)', flush=True)
+            if name in PROFILE_STATES:
+                pw = posture_window(mats[s:e], mode=PROFILE_STATES[name])
+                if pw:
+                    s2, e2 = pw
+                    print(f'  profile window [{s + s2}:{s + e2}] len={e2 - s2} (side-facing selected)', flush=True)
+                    s, e = s + s2, s + e2
         if e - s < 4:
             print('  TOO FEW, skip', flush=True); return
         sel = mats[s:e]
@@ -298,9 +361,13 @@ def process_state(name):
     elif name in ONESHOT:
         seq = frames          # intro+loop 分段在引擎侧/部署脚本处理
     else:
-        i, j, d = find_loop_pair(frames)
-        seq = frames[i:j + 1]
-        print(f'  loop pair ({i},{j}) seam={d:.1f}', flush=True)
+        if name in ('walk', 'run'):
+            i, j = find_gait_loop(frames)
+            seq = frames[i:j + 1]
+        else:
+            i, j, d = find_loop_pair(frames)
+            seq = frames[i:j + 1]
+            print(f'  loop pair ({i},{j}) seam={d:.1f}', flush=True)
     if name in RT_FRAMES:
         seq = resample_seq(seq, RT_FRAMES[name])
     for k, f in enumerate(seq):
