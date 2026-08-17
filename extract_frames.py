@@ -28,12 +28,14 @@ ONESHOT = {'sleep', 'stretch', 'happy', 'surprised', 'play_dead'}
 #   站立272-278 / 坐316 / 伸展291 / 躺卧212-217
 TARGET_H = {
     'idle': 274, 'bark': 274, 'happy': 274, 'dance': 274,
-    'beg': 274, 'bath': 274, 'eat': 274, 'sit': 316,
+    'beg': 274, 'bath': 274, 'sit': 316,
     'stretch': 291,
     # walk/run 侧面视角属站立档（husky实测 walk=274 run=272）
     'walk': 274, 'run': 274,
     # lick/surprised 须锚定站立档（husky实测 270/265，否则拉布拉多424/406忽大忽小）
     'lick': 274, 'surprised': 274,
+    # 2026-08-17 v2: eat改模型原生红碗视频, 整体bbox≈狗低头高(旧bake_prop锚230)
+    'eat': 240,
 }
 # 重采样到引擎 ANIMS 声明帧数（引擎零改动按 count 加载）
 RT_FRAMES = {
@@ -326,6 +328,46 @@ def stabilize_h(frames):
         out.append(Image.fromarray(arr))
     return out
 
+def sleep_scale_frames(frames):
+    """sleep 逐帧姿态缩放(2026-08-17): union-bbox整体缩放以最大帧(站坐h=468)为基准,
+    坐姿=1.7x idle/sit→用户报"明显大+大→小跳变"。改逐帧目标高度:
+    坐档300(=sit认可316的侧身紧凑版) / 躺档204(=roll认可203), 中间按h线性过渡,
+    相邻帧目标差<=3px=无跳变。帧间相对缩放=消除模型自身尺寸漂移。"""
+    hs, ws = [], []
+    for f in frames:
+        a = np.array(f)[:, :, 3]
+        yy, xx = np.where(a > 40)
+        if len(xx) == 0:
+            hs.append(0); ws.append(0); continue
+        hs.append(yy.max() - yy.min() + 1); ws.append(xx.max() - xx.min() + 1)
+    hs = np.array(hs, float); ws = np.array(ws, float)
+    out = []
+    for i, f in enumerate(frames):
+        h = hs[i]
+        if h <= 0:
+            out.append(f); continue
+        if h >= 0.85 * hs.max():
+            th = 300.0          # 坐档
+        elif h <= 0.55 * hs.max():
+            th = 204.0          # 躺档(=roll认可)
+        else:
+            t = (h - 0.55 * hs.max()) / (0.30 * hs.max())
+            th = 204.0 + t * (300.0 - 204.0)
+        s = th / h
+        # 宽度钳制防越界
+        if ws[i] * s > 470:
+            s = 470.0 / ws[i]
+        tw, tth = max(1, int(round(ws[i] * s))), max(1, int(round(h * s)))
+        a = np.array(f)[:, :, 3]
+        yy, xx = np.where(a > 40)
+        y0, x0 = yy.min(), xx.min()
+        crop = f.crop((x0, y0, x0 + int(ws[i]), y0 + int(h)))
+        crop = crop.resize((tw, tth), Image.LANCZOS)
+        canvas = Image.new('RGBA', (512, 512), (0, 0, 0, 0))
+        canvas.paste(crop, ((512 - tw) // 2, 478 - tth), crop.split()[3])
+        out.append(canvas)
+    return out
+
 def find_loop_pair(frames, min_span_frac=0.33):
     """暴力找首尾最接近帧对作 loop 边界（walk/run 用）。"""
     arrs = [np.array(f)[:, :, 3].astype(np.float32) for f in frames]
@@ -409,6 +451,9 @@ def process_state(name):
     if not frames:
         print('  normalize failed', flush=True); return
     frames = stabilize_h(frames)
+    if name == 'sleep':
+        # 2026-08-17: 逐帧姿态缩放(坐300→躺204线性), 修"明显大+大→小跳变"
+        frames = sleep_scale_frames(frames)
     if name in PINGPONG:
         seq = frames + frames[-2:0:-1]
     elif name in ONESHOT:

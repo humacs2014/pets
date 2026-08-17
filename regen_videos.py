@@ -86,17 +86,22 @@ ACTIONS = {
                   'completely alone.', ', hand, hands, fingers, arm'),
     'play_dead': (' It flops down onto its side and lies completely still, pretending to be '
                   'dead with relaxed legs.', ''),
+    # 2026-08-17 v2: 旧"NO bowl+地上吃粮+后贴碗sprite"永远不自然(碗悬空/嘴舔地/粮渣)——
+    # 改模型原生渲染红碗+嘴入碗, 废弃bake_prop后贴
     'eat':       (' It stands in an EXACT SIDE PROFILE VIEW facing right: only ONE eye is '\
                   'visible, the tail extends to the left, the whole body seen strictly from the '\
                   'side at ALL times, the chest and face NEVER turn toward the camera, front '\
-                  'legs vertical and parallel, hind legs close together. It lowers its head to '\
-                  'the floor IN PROFILE: the muzzle points down-right and touches the white '\
-                  'floor at floor level, still only one eye visible while eating. It eagerly '\
-                  'eats kibble scattered on the white floor right in front of its chest, '\
-                  'chewing and bobbing at floor level 80 percent of the time, lifting the head '\
-                  'only briefly then returning to eat, tail wagging gently, body staying in the '\
-                  'same spot. NO bowl, NO food bowl visible, pure white background.',
-                  ', bowl, food bowl, dish, plate, front view, facing camera, both eyes '\
+                  'legs vertical and parallel, hind legs close together. A small red plastic '\
+                  'food bowl filled with kibble sits on the white floor right in front of its '\
+                  'chest, resting firmly on the floor at floor level. It lowers its head IN '\
+                  'PROFILE and eats FROM the bowl: the muzzle goes down INTO the red bowl, the '\
+                  'nose disappearing inside the bowl rim while chewing, head bobbing at bowl '\
+                  'level 80 percent of the time, lifting the head only briefly with a piece of '\
+                  'kibble in the mouth then returning into the bowl, tail wagging gently, the '\
+                  'body and the bowl staying in the exact same spot the whole time.',
+                  ', food scattered on floor, kibble on ground, eating from floor, licking '\
+                  'floor, crumbs on floor, floating bowl, bowl in air, moving bowl, multiple '\
+                  'bowls, giant bowl, empty floor, front view, facing camera, both eyes '\
                   'visible, three quarter view, chest toward camera, front legs spread, splayed '\
                   'front legs, splayed legs, legs apart, wide stance, head up, looking around, '\
                   'standing alert, sniffing air, head turned to camera, looking at viewer'),
