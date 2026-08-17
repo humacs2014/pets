@@ -155,6 +155,20 @@ def gait_window(mats, min_len=8):
 
 PROFILE_STATES = {'idle': 'high', 'bark': 'high', 'sit': 'low', 'eat': 'high'}
 
+def _front_standing(a):
+    """正面站/坐过渡帧(奇怪后腿主体): 站姿档且下部行带细腿分离(密度<0.60)。
+    2026-08-17实测sleep视频: 正面站0-9帧dens 0.36-0.49、正面坐过渡10-13 0.51-0.55,
+    侧身坐/躺25+ dens>=0.64 → 0.60完美分离。span判据对卧姿误报(0.81-0.91重叠)。"""
+    ys, xs = np.where(a > 30)
+    if len(xs) == 0:
+        return False
+    y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
+    w, h = x1 - x0 + 1, y1 - y0 + 1
+    if h <= w * 0.72:
+        return False                 # 侧躺/蜷缩不约束
+    band = a[y0 + int(h * 0.78): y0 + int(h * 0.94), x0:x1 + 1]
+    return (band > 127).mean() < 0.60
+
 def _standing_leg_ok(a):
     """站姿帧腿质量: 下部行带连通块>=5(分叉多腿感)或腿跨度过宽(劈叉)=False。
     2026-08-17事故: idle/eat 视频偶发3/4正面张腿帧, 宽高比接近侧身帧,
@@ -361,6 +375,14 @@ def process_state(name):
         # 过渡视频不做面积过滤（躺/站面积差异大），取全部非边缘帧
         ms = [alpha_metrics(m) for m in mats]
         sel = [m for m, t in zip(mats, ms) if not t['edge'] and t['area'] > 1000]
+        # 2026-08-17: sleep 视频开头正面站/坐过渡帧(奇怪后腿主体)必须剔除——
+        # 旧代码零过滤直通, 用户截图第1帧即正面张腿站姿
+        front = [np.array(Image.open(m).convert('RGBA'))[:, :, 3] for m in sel]
+        nfront = sum(1 for a in front if _front_standing(a))
+        if nfront:
+            sel = [m for m, a in zip(sel, front) if not _front_standing(a)]
+            print(f'  transition: dropped {nfront} front-facing frames', flush=True)
+        assert len(sel) >= 24, f'过滤后仅{len(sel)}帧, 视频需重生成'
         print(f'  transition: kept {len(sel)}/{len(mats)}', flush=True)
     else:
         if name in ('walk', 'run'):
