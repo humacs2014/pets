@@ -31,10 +31,11 @@ ACTIONS = {
                   'legs straight down and clearly separated, the two hind legs close together '\
                   'and parallel, never splayed wide. The head stays in profile the whole time: '\
                   'it looks around by turning slightly within the side plane only, NEVER turning '\
-                  'toward the camera, occasional small ear twitches, gently swaying.',
+                  'toward the camera, occasional small ear twitches, gently swaying. The body '\
+                  'NEVER turns to a front or three-quarter view, the chest never faces the camera.',
                   ', head turned to camera, looking at viewer, both eyes visible, facing camera, '\
-                  'front view, three quarter view, splayed legs, wide stance, legs apart, five '\
-                  'legs, six legs, extra legs'),
+                  'front view, three quarter view, chest toward camera, splayed legs, wide '\
+                  'stance, legs apart, five legs, six legs, extra legs'),
     'sit':       (' It calmly sits down facing the camera, tail curled around its paws, '
                   'breathing gently with occasional ear twitches.', ''),
     'sleep':     (' It sits upright, yawns sleepily, then slowly lies down COMPLETELY on its '
@@ -59,8 +60,14 @@ ACTIONS = {
                   'self-grooming rhythm, occasionally pausing and resuming.', ''),
     'happy':     (' It jumps up and down joyfully with excitement, wagging its tail rapidly, '
                   'bouncing in place.', ''),
-    'roll':      (' It stands, then deliberately lies down and rolls over onto its back with '
-                  'legs in the air, wriggling around happily, then sits back up.', ''),
+    'roll':      (' Seen from the SIDE the whole time, it gently lies down on its side and '\
+                  'rolls slowly onto its back for a relaxed happy wiggle with legs loosely in '\
+                  'the air, then rolls back to its side and stands up again. The roll stays a '\
+                  'gentle partial roll in the side plane, the puppy never turns its back to the '\
+                  'camera and is never seen from behind, the body never twists into extreme '\
+                  'contorted angles.',
+                  ', back facing camera, seen from behind, butt facing camera, extreme twist, '\
+                  'contorted body, unnatural twisted pose, spine twisted'),
     'dance':     (' It dances playfully on its hind legs, stepping and bouncing rhythmically '
                   'in place.', ''),
     'stretch':   (' It performs a full body stretch: lowering its front chest to the ground '
@@ -77,17 +84,19 @@ ACTIONS = {
     'play_dead': (' It flops down onto its side and lies completely still, pretending to be '
                   'dead with relaxed legs.', ''),
     'eat':       (' It stands in an EXACT SIDE PROFILE VIEW facing right: only ONE eye is '\
-                  'visible, the tail extends to the left, the whole body seen fully from the '\
-                  'side. It lowers its head to the floor IN PROFILE: the muzzle points down-'\
-                  'right and touches the white floor at floor level, still only one eye '\
-                  'visible while eating. It eagerly eats kibble scattered on the white floor '\
-                  'right in front of its chest, chewing and bobbing at floor level 80 percent '\
-                  'of the time, lifting the head only briefly then returning to eat, tail '\
-                  'wagging gently, body staying in the same spot. NO bowl, NO food bowl '\
-                  'visible, pure white background.',
+                  'visible, the tail extends to the left, the whole body seen strictly from the '\
+                  'side at ALL times, the chest and face NEVER turn toward the camera, front '\
+                  'legs vertical and parallel, hind legs close together. It lowers its head to '\
+                  'the floor IN PROFILE: the muzzle points down-right and touches the white '\
+                  'floor at floor level, still only one eye visible while eating. It eagerly '\
+                  'eats kibble scattered on the white floor right in front of its chest, '\
+                  'chewing and bobbing at floor level 80 percent of the time, lifting the head '\
+                  'only briefly then returning to eat, tail wagging gently, body staying in the '\
+                  'same spot. NO bowl, NO food bowl visible, pure white background.',
                   ', bowl, food bowl, dish, plate, front view, facing camera, both eyes '\
-                  'visible, three quarter view, head up, looking around, standing alert, '\
-                  'sniffing air, head turned to camera, looking at viewer'),
+                  'visible, three quarter view, chest toward camera, front legs spread, splayed '\
+                  'front legs, splayed legs, legs apart, wide stance, head up, looking around, '\
+                  'standing alert, sniffing air, head turned to camera, looking at viewer'),
     # walk/run 侧面视角+跑步机范式:位置锁定但腿必须大幅完整步态(旧'in place'措辞
     # 被AI读成压制腿幅=原地踏步,v2修正)
     'walk':      (' It walks on a treadmill in a SIDEWAYS VIEW facing right, performing a FULL '\

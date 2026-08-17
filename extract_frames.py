@@ -153,19 +153,50 @@ def gait_window(mats, min_len=8):
     mot = motion_scores(mats)
     return max(runs, key=lambda r: float(np.mean(mot[r[0]:r[1]])) * (r[1] - r[0]) ** 0.3)
 
-PROFILE_STATES = {'idle': 'high', 'bark': 'high', 'sit': 'low'}
+PROFILE_STATES = {'idle': 'high', 'bark': 'high', 'sit': 'low', 'eat': 'high'}
+
+def _standing_leg_ok(a):
+    """站姿帧腿质量: 下部行带连通块>=5(分叉多腿感)或腿跨度过宽(劈叉)=False。
+    2026-08-17事故: idle/eat 视频偶发3/4正面张腿帧, 宽高比接近侧身帧,
+    旧posture_window只看宽高比→漏过→用户启动/回idle时看到分叉狗。"""
+    ys, xs = np.where(a > 40)
+    if len(xs) == 0:
+        return True
+    y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
+    h, w = y1 - y0 + 1, x1 - x0 + 1
+    if h <= w * 0.72:
+        return True                      # 非站姿(坐/躺/低头)不约束
+    band = a[y0 + int(h * 0.78): y0 + int(h * 0.94)]
+    for r in band:
+        line = r[x0:x1 + 1] > 127
+        if line.sum() < 4:
+            continue
+        d = np.diff(line.astype(int))
+        starts = list(np.where(d == 1)[0] + 1)
+        ends = list(np.where(d == -1)[0] + 1)
+        if line[0]:
+            starts = [0] + starts
+        if line[-1]:
+            ends = ends + [len(line)]
+        blobs = [(s, e) for s, e in zip(starts, ends) if e - s >= 2]
+        # 2026-08-17修正: 只保留span判据。blobs>=5会误杀低头吃食侧视帧
+        # (低头+前后腿分离天然5 blob, span仅0.80-0.85); 真分叉狗span 0.93-0.99。
+        if blobs and (blobs[-1][1] - blobs[0][0]) / w > 0.9:
+            return False
+    return True
 
 def posture_window(mats, min_len=16, mode='high'):
     """按姿态宽高比选窗: mode='high'站立态选纯侧身段(跳3/4正面intro);
     mode='low'坐姿选稳坐段(跳站姿intro)。
-    2026-08-17事故: idle intro 3/4正面→多腿错觉; sit intro站姿帧→引擎站↔坐跳变。"""
+    2026-08-17事故: idle intro 3/4正面→多腿错觉; sit intro站姿帧→引擎站↔坐跳变。
+    high模式叠加腿质量判据(_standing_leg_ok), 剔除偶发正面张腿帧。"""
     ok, ars = [], []
     for m in mats:
         a = np.array(Image.open(m).convert('RGBA'))[:, :, 3]
         ys, xs = np.where(a > 30)
         if len(xs) == 0:
             ok.append(False); ars.append(0.0); continue
-        ok.append(True)
+        ok.append(mode == 'low' or _standing_leg_ok(a))
         ars.append((xs.max() - xs.min() + 1) / (ys.max() - ys.min() + 1))
     ars = np.array(ars)
     sm = np.array([np.median(ars[max(0, i - 2):i + 3]) for i in range(len(ars))])

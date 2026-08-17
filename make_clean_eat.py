@@ -6,7 +6,7 @@ husky v47 起该步骤独立于 extract_frames.py（后者做loop/normalize，�
 import os
 import numpy as np
 from PIL import Image
-from extract_frames import cutout_frames, extract
+from extract_frames import cutout_frames, extract, _standing_leg_ok
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(ROOT, 'clean')
@@ -21,6 +21,10 @@ for k, p in enumerate(mats):
     im = Image.open(p).convert('RGBA')
     a = np.array(im)
     if a[..., 3].max() < 40:
+        continue
+    # 2026-08-17: 剔除3/4正面张腿帧(分叉狗)——低头吃食帧非站姿自动豁免
+    if not _standing_leg_ok(a[..., 3]):
+        print(f'  skip c_{k:03d}: splayed/front-view legs', flush=True)
         continue
     im.save(os.path.join(OUT, f'c_{k:03d}.png'))
     n += 1
