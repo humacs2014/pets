@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import QApplication, QWidget, QMenu
 from PyQt5.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QRect, QThread
 from PyQt5.QtGui import (
     QPainter, QPen, QBrush, QColor, QPainterPath, QFont, QFontMetrics,
-    QImage, QCursor, QRadialGradient, QLinearGradient
+    QImage, QImageReader, QCursor, QRadialGradient, QLinearGradient
 )
 
 # 跨平台中文字体：macOS无微软雅黑，回退到苹方
@@ -199,75 +199,86 @@ class _LoadThread(QThread):
         self.result = b
 
 
+class _StateLoadThread(QThread):
+    """v64: 懒加载单状态——后台构建该状态帧表，finished后主线程写回bank。"""
+    def __init__(self, bank, state):
+        super().__init__()
+        self.bank, self.state = bank, state
+        self.imgs = None
+        self.lift = None
+
+    def run(self):
+        self.imgs, self.lift = self.bank._build_state(self.state)
+
+
 class SpriteBank:
+    # v64: tight画布状态（assets由rebake_v64.py重烘焙：去空白边+质心居中+脚底锚定，
+    # calm六态基准统一560）。walk=认可版保持1024²方画布原路径。
+    TIGHT = {'idle', 'run', 'eat', 'bark', 'sleep', 'sit', 'lick', 'happy',
+             'roll', 'dance', 'stretch', 'beg', 'bath', 'surprised',
+             'play_dead', 'pet'}
+    # v64: 一次性/低频状态懒加载——启动不预载，首次set_state触发后台异步装载，
+    # 常驻集=交互高频七态，内存峰值大幅下降。
+    LAZY = {'happy', 'roll', 'stretch', 'pet', 'play_dead', 'surprised', 'sleep'}
+    ASSET_SCALE = 1.05  # 纹理长边=屏上设备像素长边×1.05（1:1锐度+微余量，内存最小化）
+
     def __init__(self):
         self.frames = {}     # state -> [QImage正常]
         self.frames_m = {}   # state -> [QImage镜像]
+        self.geo = {}        # v64: state -> (源宽, 源高) 首帧尺寸(tight恒定)
+        self.alias = {}      # v64: state -> 帧表所有者(potty→sit等，去重不双载)
+        self._lazy_threads = {}
         # 腿部装配部件：state -> dict(body/front/rear 各 [QImage正常, QImage镜像])
         self.rig_parts = {}
         self.rig_parts_m = {}
         self.lift_map = {}   # state -> [每帧离地高度 0..1]（跳跃弧线联动阴影）
 
+    def _state_draw(self, state):
+        """v64: 每状态按需分辨率。旧版统一draw=500(dpr2)——方画布空白也占长边，
+        纹理长边可达屏上需求2倍，内存∝draw²爆炸。改为按tight长边占比分配：
+        draw_s = draw × max(w,h)/1024 × ASSET_SCALE，钳制[96,1024]。"""
+        draw = getattr(self, 'draw_size', DRAW_SIZE)
+        if state in self.TIGHT:
+            w, h = self.geo.get(state, (1024, 1024))
+            return max(96, min(1024, int(round(draw * max(w, h) / 1024.0
+                                               * self.ASSET_SCALE))))
+        return min(draw, 1024)
+
     def load(self):
         base = asset_path()
-        # v25(P9): 按 DRAW_SIZE*zoom 高分辨率加载，配合paintEvent顶层scale(zoom)，
-        # 设备空间1:1重采样——任意缩放下都保持锐利。
-        # （LEG_RIG为空、rig为死代码，几何对齐不受尺寸影响）
-        draw = getattr(self, 'draw_size', DRAW_SIZE)
-        # v2 高分辨率(1024素材): 上限=源分辨率1024；另加内存预算双钳制——
-        # 全部ANIMS帧(含potty别名重复加载)×draw²×4B ≤ ~1.4GB，
-        # 1100帧时 draw≤564。Mac Retina zoom=1 需 draw=500 恰好 1:1 设备像素。
-        # （旧500硬上限是512素材时代遗留，1024源下提高上限才保留全部细节）
-        _n_tex = sum(v[1] for v in ANIMS.values())
-        _budget = int((1.4e9 / (_n_tex * 4)) ** 0.5)
-        draw = min(draw, 1024, _budget)
-        for state, (prefix, count, _, _, _i) in ANIMS.items():
-            imgs, imgs_m = [], []
-            for i in range(count):
-                fn = os.path.join(base, f'{prefix}_{i:02d}.webp')  # v63: webp容器(视觉无损q95, -83%包体)
-                img = QImage(fn)
-                if img.isNull():
-                    continue
-                img = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
-                # 缩放到目标尺寸（双线性平滑）
-                img = img.scaled(draw, draw,
-                                  Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                imgs.append(img)
-            # v49: 镜像懒生成——旧版每帧预生成normal+mirror双份ARGB32，
-            # 13状态×2=1300+张常驻≈300MB+。镜像仅walk/run/potty_run横向移动时消费，
-            # 改为get()首次请求时按需镜像已居中的draw×draw画布（居中天然对称，无shift误差）。
-            imgs, _sh = self._center_frames(imgs)
-            self.frames[state] = imgs
-            self.frames_m[state] = [None] * len(imgs)
-            # ── 每帧离地高度：内容包围盒底边相对全序列最大底边的抬升（归一化0..1）──
-            # 纯Python抽样扫描：从底向上逐行、每8列取一点（脚底通常前几行即命中）
-            bottoms = []
-            for im in imgs:
-                buf = im.constBits()
-                buf.setsize(im.byteCount())
-                data = bytes(buf)   # bytes索引返回int，可直接比较
-                w4 = im.width() * 4
-                bpl = im.bytesPerLine()
-                cols = range(0, w4, 32)   # 每8列采样alpha通道
-                bottom = im.height() - 1
-                for row in range(im.height() - 1, -1, -1):
-                    rowbase = row * bpl + 3
-                    if any(data[rowbase + c] > 16 for c in cols):
-                        bottom = row
-                        break
-                bottoms.append(bottom)
-            if bottoms:
-                ground = max(bottoms)
-                var = ground - min(bottoms)
-                # 阴影闪烁根因：腿姿态/呼吸引起的底边小幅抖动(<30px)不是真跳跃，
-                # 旧代码用 max(6.0, var) 归一化会把12px抬腿放大成100%离地→阴影每步收缩45%。
-                # 变差<30px 视为贴地，lift恒为0；仅真跳跃状态(run/jump/stretch等)保留阴影联动。
-                if var < 30:
-                    self.lift_map[state] = [0.0 for _ in bottoms]
-                else:
-                    span = float(var)
-                    self.lift_map[state] = [
-                        max(0.0, min(1.0, (ground - b) / span)) for b in bottoms]
+        # ── v64 几何表：读每状态首帧尺寸（tight资产同状态尺寸恒定）──
+        for state, (prefix, _c, _f, _l, _i) in ANIMS.items():
+            if state in self.geo or state in self.alias:
+                continue
+            for ext in ('webp', 'png'):
+                fn = os.path.join(base, f'{prefix}_00.{ext}')
+                if os.path.exists(fn):
+                    r = QImageReader(fn)
+                    sz = r.size()
+                    if sz.isValid():
+                        self.geo[state] = (sz.width(), sz.height())
+                    break
+            self.geo.setdefault(state, (1024, 1024))
+        # ── v64 别名表：同prefix状态共享帧列表（potty→sit、potty_run→run）──
+        for state, (prefix, _c, _f, _l, _i) in ANIMS.items():
+            owner = next((s2 for s2, (p2, _c2, _f2, _l2, _i2) in ANIMS.items()
+                          if p2 == prefix), None)
+            if owner and owner != state:
+                self.alias[state] = owner
+                self.geo.setdefault(state, self.geo.get(owner, (1024, 1024)))
+        # ── 装载：别名指向所有者列表；懒状态占位空表首次触发时装载 ──
+        for state in ANIMS:
+            if state in self.alias:
+                owner = self.alias[state]
+                self.frames[state] = self.frames[owner]
+                self.frames_m[state] = self.frames_m[owner]
+                self.lift_map[state] = self.lift_map[owner]
+            elif state in self.LAZY:
+                self.frames[state] = []
+                self.frames_m[state] = []
+                self.lift_map[state] = []
+            else:
+                self._load_state(state)
         # v19: 逐帧切腿——run素材含gallop跳跃（逐帧body_bot位移达31px），
         # 固定切线(只用第0帧)会让跳跃帧腿块错位。每帧按自身身体底缘切割，
         # 既保留帧内gallop起伏，又保证切线始终贴合身体。
@@ -295,6 +306,94 @@ class SpriteBank:
                 parts_m.append(self._cut_rig(img_m, g2, mirrored=True))
             self.rig_parts[state] = parts
             self.rig_parts_m[state] = parts_m
+
+    def ensure_state(self, state):
+        """v64: 懒状态首次触发→后台异步装载（不阻塞渲染；装载期间get()返回空图跳过绘制）"""
+        if state not in self.LAZY or self.frames.get(state):
+            return
+        if state in self._lazy_threads:
+            return
+        t = _StateLoadThread(self, state)
+        self._lazy_threads[state] = t
+        t.finished.connect(lambda s=state, th=t: self._on_lazy_done(s, th))
+        t.start()
+
+    def _on_lazy_done(self, state, t):
+        self._lazy_threads.pop(state, None)
+        if t.imgs is not None:
+            self.frames[state] = t.imgs
+            self.frames_m[state] = [None] * len(t.imgs)
+            self.lift_map[state] = t.lift
+        t.deleteLater()
+
+    def _load_state(self, state):
+        imgs, lift = self._build_state(state)
+        self.frames[state] = imgs
+        self.frames_m[state] = [None] * len(imgs)
+        self.lift_map[state] = lift
+
+    def _build_state(self, state):
+        """v64: 单状态帧表构建。tight态按原比例缩放到按需分辨率（长边=draw_s）；
+        方画布态(walk认可版)走旧路径(scaled方框+质心居中)。"""
+        base = asset_path()
+        prefix, count, _f, _l, _i = ANIMS[state]
+        tight = state in self.TIGHT
+        draw = self._state_draw(state)
+        imgs = []
+        for i in range(count):
+            fn = os.path.join(base, f'{prefix}_{i:02d}.webp')
+            if not os.path.exists(fn):
+                fn = os.path.join(base, f'{prefix}_{i:02d}.png')
+            img = QImage(fn)
+            if img.isNull():
+                continue
+            img = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
+            if tight:
+                w, h = img.width(), img.height()
+                sc = draw / float(max(w, h))
+                img = img.scaled(max(2, int(round(w * sc))),
+                                 max(2, int(round(h * sc))),
+                                 Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            else:
+                # 缩放到目标尺寸（双线性平滑）
+                img = img.scaled(draw, draw,
+                                  Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            imgs.append(img)
+        if not tight and imgs:
+            # v49: 镜像懒生成——get()首次请求时按需镜像已居中的draw×draw画布
+            # （居中天然对称，无shift误差）。
+            imgs, _sh = self._center_frames(imgs)
+        # ── 每帧离地高度：内容包围盒底边相对全序列最大底边的抬升（归一化0..1）──
+        # 纯Python抽样扫描：从底向上逐行、每8列取一点（脚底通常前几行即命中）
+        bottoms = []
+        for im in imgs:
+            buf = im.constBits()
+            buf.setsize(im.byteCount())
+            data = bytes(buf)   # bytes索引返回int，可直接比较
+            w4 = im.width() * 4
+            bpl = im.bytesPerLine()
+            cols = range(0, w4, 32)   # 每8列采样alpha通道
+            bottom = im.height() - 1
+            for row in range(im.height() - 1, -1, -1):
+                rowbase = row * bpl + 3
+                if any(data[rowbase + c] > 16 for c in cols):
+                    bottom = row
+                    break
+            bottoms.append(bottom)
+        if bottoms:
+            ground = max(bottoms)
+            var = ground - min(bottoms)
+            # 阴影闪烁根因：腿姿态/呼吸引起的底边小幅抖动(<30px)不是真跳跃，
+            # 旧代码用 max(6.0, var) 归一化会把12px抬腿放大成100%离地→阴影每步收缩45%。
+            # 变差<30px 视为贴地，lift恒为0；仅真跳跃状态(run/jump/stretch等)保留阴影联动。
+            if var < 30:
+                lift = [0.0 for _ in bottoms]
+            else:
+                span = float(var)
+                lift = [max(0.0, min(1.0, (ground - b) / span)) for b in bottoms]
+        else:
+            lift = []
+        return imgs, lift
 
     @staticmethod
     def _body_bottom(img):
@@ -414,13 +513,21 @@ class SpriteBank:
                 'amp_deg': geo['amp_deg']}
 
     def get(self, state, idx, flipped):
+        state = self.alias.get(state, state)   # v64: 别名解析(potty→sit)，懒owner安全
         if flipped:
             bank = self.frames_m[state]
-            i = idx % len(bank)
-            if bank[i] is None:  # v49镜像懒生成：首次请求才镜像，内存减半
-                bank[i] = self.frames[state][i].mirrored(True, False)
+            i = idx % len(bank) if bank else 0
+            if not bank or bank[i] is None:
+                src = self.frames.get(state) or []
+                if not src:
+                    return QImage()   # v64懒加载未完成→空图跳过绘制
+                # v49镜像懒生成：首次请求才镜像，内存减半
+                bank[i] = src[i].mirrored(True, False)
             return bank[i]
-        return self.frames[state][idx % len(self.frames[state])]
+        bank = self.frames[state]
+        if not bank:
+            return QImage()           # v64懒加载未完成→空图跳过绘制
+        return bank[idx % len(bank)]
 
 
 # ═══════════════════════════════════════════════════════════
@@ -773,6 +880,7 @@ class PetWindow(QWidget):
     def set_state(self, s, duration=None):
         if s not in ANIMS:
             return
+        self.bank.ensure_state(s)   # v64: 懒状态首次触发→后台异步装载
         prev = self.state
         # 同状态重入（AI续走）：保持步态帧连续，不重置动画相位——
         # 否则每次AI重新决策都会把frame_idx硬切回0，步态周期性卡顿
@@ -924,7 +1032,8 @@ class PetWindow(QWidget):
                 self.sleep_twitch_next = random.uniform(5, 10)
             self.sleep_twitch_t = max(0.0, self.sleep_twitch_t - dt * 2.5)
         # 离地高度平滑（EMA ~90ms）：run等状态帧间底边跳动不再直接驱动阴影尺寸
-        lift_seq = self.bank.lift_map.get(self.state)
+        lift_seq = self.bank.lift_map.get(
+            self.bank.alias.get(self.state, self.state))
         if lift_seq:
             raw_air = lift_seq[self.frame_idx % len(lift_seq)]
         else:
@@ -1277,8 +1386,19 @@ class PetWindow(QWidget):
             painter.rotate(rot)
         painter.scale(sx, sy)
 
-        draw_rect = QRectF(-DRAW_SIZE / 2, -DRAW_SIZE + GROUND_PAD,
-                            DRAW_SIZE, DRAW_SIZE)
+        # v64: 脚底锚定比例绘制——tight资产按帧自身w/h等比绘制（画布高=union高，
+        # 帧内无脉动；calm六态基准统一，状态切换无跳变）。
+        # k换算使屏上逻辑尺寸与v63方画布路径逐像素等价：
+        #   tight: 纹理长边=draw×max(w,h)/1024×1.05 → k=DRAW_SIZE/(draw×1.05)，
+        #          屏上高=纹理高×k=h/1024×DRAW_SIZE（1.05纹理过采样不影响几何）
+        #   方画布(walk认可版): k=DRAW_SIZE/draw，与v63的DRAW_SIZE方rect完全一致
+        _owner = self.bank.alias.get(self.state, self.state)
+        if _owner in self.bank.TIGHT:
+            k = DRAW_SIZE / (self.bank.draw_size * self.bank.ASSET_SCALE)
+        else:
+            k = DRAW_SIZE / max(96, min(self.bank.draw_size, 1024))
+        _iw, _ih = img.width(), img.height()
+        draw_rect = QRectF(-_iw * k / 2, -_ih * k + GROUND_PAD, _iw * k, _ih * k)
         # ── 腿部装配渲染（Paper-Doll Rig）：真实迈步摆动 ──
         # v19: 素材腿部冻结，运行时把精灵拆成 后腿→身体→前腿 三层，
         # 绕髋关节钟摆摆动产生真实步态。rig为逐帧列表（跟随frame_idx）。
