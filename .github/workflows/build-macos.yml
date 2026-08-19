@@ -102,29 +102,29 @@ jobs:
           cp "双击打开.command" dmg_stage/
           chmod +x "dmg_stage/双击打开.command"
           ln -s /Applications dmg_stage/Applications
-          hdiutil create -volname "金毛犬桌面宠物" -srcfolder dmg_stage -ov -format UDZO "GoldenPet-v1-macOS-${{ matrix.arch }}.dmg"
+          hdiutil create -volname "金毛犬桌面宠物" -srcfolder dmg_stage -ov -format UDZO "GoldenPet-v2-macOS-${{ matrix.arch }}.dmg"
 
       - name: Verify DMG
         run: |
-          hdiutil verify "GoldenPet-v1-macOS-${{ matrix.arch }}.dmg"
+          hdiutil verify "GoldenPet-v2-macOS-${{ matrix.arch }}.dmg"
           ls -lh *.dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: pet-macos-dmg-${{ matrix.arch }}
-          path: "GoldenPet-v1-macOS-${{ matrix.arch }}.dmg"
+          path: "GoldenPet-v2-macOS-${{ matrix.arch }}.dmg"
           retention-days: 30
 
       - name: Cleanup previous release（重建干净的Release）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release delete golden-v1-macos-${{ matrix.arch }} --yes --cleanup-tag 2>/dev/null || true
+        run: gh release delete golden-v2-macos-${{ matrix.arch }} --yes --cleanup-tag 2>/dev/null || true
 
       - name: Create Release（公开下载链接，朋友无需登录即可下载）
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: golden-v1-macos-${{ matrix.arch }}
+          tag_name: golden-v2-macos-${{ matrix.arch }}
           name: ${{ matrix.release_name }}
           body: |
             macOS版金毛犬桌面宠物安装包（${{ matrix.arch }}架构）。
@@ -133,4 +133,4 @@ jobs:
             【首次打开（关键）】打开DMG里的"双击打开.command"（会弹出终端窗口自动处理安全限制并启动）。
             备选：在访达里右键点击应用→选择"打开"→弹窗里再点"打开"。
             仍提示"已损坏"：打开终端粘贴执行 xattr -cr /Applications/金毛犬桌面宠物.app 再双击打开。
-          files: "GoldenPet-v1-macOS-${{ matrix.arch }}.dmg"
+          files: "GoldenPet-v2-macOS-${{ matrix.arch }}.dmg"

@@ -224,7 +224,7 @@ class SpriteBank:
         for state, (prefix, count, _, _, _i) in ANIMS.items():
             imgs, imgs_m = [], []
             for i in range(count):
-                fn = os.path.join(base, f'{prefix}_{i:02d}.png')
+                fn = os.path.join(base, f'{prefix}_{i:02d}.webp')  # v63: webp容器(视觉无损q95, -83%包体)
                 img = QImage(fn)
                 if img.isNull():
                     continue
