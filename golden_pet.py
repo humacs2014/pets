@@ -59,8 +59,8 @@ ANIMS = {
     #   frame_ms 一律恢复为 源时长/帧数，动作速度=Agnes生成时的真实动物速度。
     #   walk/run(步态循环+腿装配)、eat(定制碗)、sleep(10s含intro)、lick(双周期定制)为认可版，保持。
     'idle':      ('idle',      101, 50,  True,  0),   # 5.05s = 源5.04s
-    'walk':      ('walk',      30, 40,  True,  0),   # 2T=30帧, 步频1.25Hz
-    'run':       ('run',       32, 42,  True,  0),   # 2T=32帧, 步频1.5Hz
+    'walk':      ('walk',      28, 70,  True,  0),   # v61: 修复"重复+抖动": v60尾部振荡衰减帧(351px)致每循环垂直pop, 裁窗口src[3..57]+stride2+最小差wrap旋转→28帧 fd=19.4(认可版labrador=21)/seam16.0 ratio=0.83(认可版0.83)/maxHJ=9.1%(认可版6.9) @70ms=1.96s(1.1s/步态周期≈原生1.22s)。纯真实帧无重采样
+    'run':       ('run',       15, 54,  True,  0),
     'eat':       ('eat',       34, 96,  True,  0),    # 定制认可版(碗烤入),不升帧
     'bark':      ('bark',      57, 90,  True,  0),    # 5.13s = 源5.04s
     'sleep':     ('sleep',     51, 110, True,  39),   # v50 P3: 同源重生成(完全侧躺四脚摊开) 39 intro+12 loop
@@ -68,7 +68,7 @@ ANIMS = {
     # v46: 素材含2舔毛周期→"循环两次"感。重构54帧=0-7坐下intro(播一次)+
     #   8-31单舔毛周期正播+30-9倒播ping-pong(抬回=无缝循环)，duration配套4.0
     'lick':      ('lick',      54, 74,  True,  8),
-    'happy':     ('happy',     62, 82,  False, 0),    # 5.08s = 源5.04s 一次性
+    'happy':     ('happy',     121, 42, False, 0),  # v56: 24fps原生全帧(原62@82ms=12fps掉帧+模糊)
     'roll':      ('roll',      121, 42, False, 0),    # v54: puppy管线重生成 24fps原生全帧 5.08s 一次性(站→仰滚→坐)
     'dance':     ('dance',     57, 90,  True,  0),    # 5.13s = 源5.04s
     'stretch':   ('stretch',   117, 43, False, 0),    # 5.03s = 源5.04s
@@ -76,7 +76,8 @@ ANIMS = {
     'bath':      ('bath',      57, 90,  True,  0),    # 5.13s = 源5.04s
     'surprised': ('surprised', 45, 114, False, 0),    # 5.13s = 源5.04s 一次性
     'play_dead': ('play_dead', 68, 75,  False, 0),    # 5.10s = 源5.04s 一次性
-    'potty_run': ('run',       32, 42,  True,  0),  # 复用run帧，帧数必须与run一致
+    'pet':       ('pet',       107, 42, False, 0),    # v57: 独立摸摸头互动(人手抚摸+小狗享受) 24fps原生 一次性 4.5s
+    'potty_run': ('run',       15, 54,  True,  0),  # 复用run帧，帧数必须与run一致
     'potty':     ('sit',       63, 80,  True,  22),   # 复用sit帧(同v53)
 }
 
@@ -115,6 +116,26 @@ def save_zoom(zoom):
             json.dump({'zoom': zoom}, f)
     except Exception:
         pass
+
+
+def _target_dpr(widget=None):
+    """v2 高分辨率: 精灵纹理尺寸必须乘 devicePixelRatio——否则 Retina(dpr=2)
+    上 250px 逻辑尺寸的纹理被拉伸到 500 设备像素=恒定2倍放大模糊
+    （Mac/高分屏"粗糙"的头号根因）。跨屏时取窗口所在屏的 dpr。"""
+    scr = None
+    if widget is not None and widget.windowHandle() is not None:
+        scr = widget.windowHandle().screen()
+    if scr is None and widget is not None:
+        try:
+            scr = QApplication.screenAt(widget.geometry().center())
+        except Exception:
+            scr = None
+    if scr is None:
+        scr = QApplication.primaryScreen()
+    try:
+        return float(scr.devicePixelRatio())
+    except Exception:
+        return 1.0
 
 
 # ═══════════════════════════════════════════════════════════
@@ -193,8 +214,13 @@ class SpriteBank:
         # 设备空间1:1重采样——任意缩放下都保持锐利。
         # （LEG_RIG为空、rig为死代码，几何对齐不受尺寸影响）
         draw = getattr(self, 'draw_size', DRAW_SIZE)
-        # v48: 源素材512px，放大超过500无额外细节只耗内存（2.5x曾=625px×1158张≈1.8GB）
-        draw = min(draw, 500)
+        # v2 高分辨率(1024素材): 上限=源分辨率1024；另加内存预算双钳制——
+        # 全部ANIMS帧(含potty别名重复加载)×draw²×4B ≤ ~1.4GB，
+        # 1100帧时 draw≤564。Mac Retina zoom=1 需 draw=500 恰好 1:1 设备像素。
+        # （旧500硬上限是512素材时代遗留，1024源下提高上限才保留全部细节）
+        _n_tex = sum(v[1] for v in ANIMS.values())
+        _budget = int((1.4e9 / (_n_tex * 4)) ** 0.5)
+        draw = min(draw, 1024, _budget)
         for state, (prefix, count, _, _, _i) in ANIMS.items():
             imgs, imgs_m = [], []
             for i in range(count):
@@ -603,7 +629,8 @@ class PetWindow(QWidget):
         self.setFixedSize(int(CANVAS * self.zoom), int(CANVAS * self.zoom))
 
         self.bank = SpriteBank()
-        self.bank.draw_size = int(DRAW_SIZE * self.zoom)  # 精灵按缩放预渲染
+        # v2 高分辨率: 纹理尺寸=逻辑尺寸×dpr，Retina上设备像素1:1（不再2倍放大模糊）
+        self.bank.draw_size = int(DRAW_SIZE * self.zoom * _target_dpr(self))
         self.bank.load()
         self.particles = ParticleSystem()
         self.physics = Physics()
@@ -721,7 +748,7 @@ class PetWindow(QWidget):
         nx = max(0, min(nx, sg.right() - cw))
         ny = max(0, min(ny, sg.bottom() - cw))
         self.move(nx, ny)
-        t = _LoadThread(int(DRAW_SIZE * new_zoom))
+        t = _LoadThread(int(DRAW_SIZE * new_zoom * _target_dpr(self)))
         t.finished.connect(self._on_zoom_loaded)
         self._load_seq = getattr(self, '_load_seq', 0) + 1
         t._seq = self._load_seq
@@ -1410,7 +1437,8 @@ class PetWindow(QWidget):
             self.happiness = min(100, self.happiness + 5)
         elif action == a_pet:
             self.happiness = min(100, self.happiness + 10)
-            self.set_state('happy', duration=5.1)
+            # v57: 摸摸头=独立pet互动(人手抚摸+小狗享受)，与舔毛lick区分
+            self.set_state('pet', duration=4.6)
         elif action == t_happy:
             self.set_state('happy', duration=5.1)
         elif action == t_roll:
