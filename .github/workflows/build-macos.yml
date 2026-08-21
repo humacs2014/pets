@@ -75,10 +75,11 @@ jobs:
           codesign --force --deep --sign - "dist/金毛犬桌面宠物.app"
           codesign -dv "dist/金毛犬桌面宠物.app" 2>&1 | head -5
 
-      - name: Upload .app artifact（tar打包：upload-artifact的zip压缩会破坏.app内的symlink且不留目录本身，必须tar保链传输）
+      - name: Upload .app artifact（tar打包：upload-artifact的zip压缩会破坏.app内的symlink且不留目录本身，必须tar保链传输；先重命名为架构名，否则两tar解包同名互覆）
         run: |
           export COPYFILE_DISABLE=1   # 防macOS tar塞入._元数据文件污染bundle
-          tar -cf "app-${{ matrix.arch }}.tar" -C dist "金毛犬桌面宠物.app"
+          mv "dist/金毛犬桌面宠物.app" "dist/${{ matrix.arch }}.app"
+          tar -cf "app-${{ matrix.arch }}.tar" -C dist "${{ matrix.arch }}.app"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
