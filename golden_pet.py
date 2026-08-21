@@ -25,8 +25,8 @@ import time
 import os
 import json
 
-from PyQt5.QtWidgets import QApplication, QWidget, QMenu
-from PyQt5.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QRect, QThread
+from PyQt5.QtWidgets import QApplication, QWidget
+from PyQt5.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QRect, QThread, QEventLoop, QEvent
 from PyQt5.QtGui import (
     QPainter, QPen, QBrush, QColor, QPainterPath, QFont, QFontMetrics,
     QImage, QImageReader, QCursor, QRadialGradient, QLinearGradient
@@ -34,6 +34,11 @@ from PyQt5.QtGui import (
 
 # 跨平台中文字体：macOS无微软雅黑，回退到苹方
 _UI_FONT = 'PingFang SC' if sys.platform == 'darwin' else 'Microsoft YaHei'
+
+# ═══ v66 参数化（换宠物改这里）═══
+PET_NAME = '金毛犬桌面宠物'            # 中文显示名（窗口前缀/单例提示）
+PET_NAME_ASCII = 'GoldenDesktopPet'   # 英文名（窗口标题/单例mutex）
+BARK_TEXT, EAT_TEXT = '汪!', '好吃!'   # 气泡文字
 
 
 def asset_path():
@@ -139,24 +144,215 @@ def _target_dpr(widget=None):
 
 
 # ═══════════════════════════════════════════════════════════
-#  v25 (P3): 菜单样式 — 配合 WA_TranslucentBackground 消除四角白角
+#  v67: 自绘圆角菜单 —— 根治 macOS QMenu 四角白角
+#  QMenu+WA_TranslucentBackground 在 macOS 下圆角外仍渲染白底；
+#  改用与主窗口同机制的 QPainterPath 自绘 popup，两平台像素级一致。
 # ═══════════════════════════════════════════════════════════
-MENU_QSS = """
-    QMenu { background:#2b2b3a; color:#e8e8f0; border:1px solid #45455c;
-            border-radius:8px; padding:6px; font-size:13px;
-            font-family:'%s'; }
-    QMenu::item { padding:8px 26px; border-radius:5px; }
-    QMenu::item:selected { background:#4a4a6e; }
-    QMenu::separator { height:1px; background:#45455c; margin:4px 10px; }
-""" % _UI_FONT
+_MENU_BG = QColor('#2b2b3a')
+_MENU_FG = QColor('#e8e8f0')
+_MENU_HOVER = QColor('#4a4a6e')
+_MENU_BORDER = QColor('#45455c')
+_MENU_ITEM_H = 34
+_MENU_SEP_H = 9
+_MENU_PAD = 8
 
 
-def make_menu(parent, title=None):
-    """(P3) 统一菜单工厂：弹窗自身透明 + 圆角样式 → 圆角外真正透明，无白角"""
-    m = QMenu(title, parent) if title else QMenu(parent)
-    m.setAttribute(Qt.WA_TranslucentBackground)
-    m.setStyleSheet(MENU_QSS)
-    return m
+class RoundedMenu(QWidget):
+    """自绘 popup 菜单：QPainterPath 圆角绘制，支持分隔线与 hover 展开子菜单。
+    exec_menu(global_pos) -> 选中项 key 或 None。"""
+
+    def __init__(self, parent=None):
+        # v67: 不用 Qt.Popup——主/子菜单两个独立 Popup 在 Windows 下鼠标捕获
+        # 冲突（子菜单展开后主菜单收不到事件）。改 Tool+顶层+应用级
+        # eventFilter 统一路由鼠标， outside 点击/Escape 自行关闭。
+        super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.items = []  # ('item',key,text) / ('sep',) / ('sub',text,RoundedMenu)
+        self.hover_idx = -1
+        self.sub_open = None
+        self.root = self
+        self._loop = None
+        self._result = None
+        self._rects = []
+        self._w = self._h = 10
+        self._font = QFont(_UI_FONT)
+        self._font.setPixelSize(13)
+
+    # ---- 构建 ----
+    def add_item(self, key, text):
+        self.items.append(('item', key, text))
+
+    def add_sep(self):
+        self.items.append(('sep',))
+
+    def add_sub(self, text, submenu):
+        # 子菜单保持独立 top-level popup（级联菜单正确形态）；
+        # 不可 setParent 到主菜单——否则 render/grab 的 DrawChildren
+        # 会连带渲染未布局的子弹出窗口导致崩溃。
+        submenu.root = self.root
+        self.items.append(('sub', text, submenu))
+
+    # ---- 布局/定位 ----
+    def _layout(self):
+        fm = QFontMetrics(self._font)
+        w = 0
+        for it in self.items:
+            if it[0] == 'sep':
+                continue
+            # item=('item',key,text) / sub=('sub',text,menu)
+            text = it[1] if it[0] == 'sub' else it[2]
+            w = max(w, fm.horizontalAdvance(text))
+        self._w = w + _MENU_PAD * 2 + 58  # 图标+文本+子菜单箭头留白
+        y = _MENU_PAD
+        self._rects = []
+        for it in self.items:
+            h = _MENU_SEP_H if it[0] == 'sep' else _MENU_ITEM_H
+            self._rects.append(QRect(_MENU_PAD, y, self._w - _MENU_PAD * 2, h))
+            y += h
+        self._h = y + _MENU_PAD
+        self.setFixedSize(self._w, self._h)
+
+    def _clamp(self, x, y, pos):
+        scr = QApplication.screenAt(pos) or QApplication.primaryScreen()
+        sg = scr.geometry()
+        if x + self._w > sg.right():
+            x = sg.right() - self._w
+        if y + self._h > sg.bottom():
+            y = sg.bottom() - self._h
+        return max(sg.left(), x), max(sg.top(), y)
+
+    def exec_menu(self, pos):
+        """模态显示于全局坐标 pos，返回选中项 key（None=取消）"""
+        self._layout()
+        self._result = None
+        self.move(*self._clamp(pos.x(), pos.y(), pos))
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        # 应用级滤镜：主/子菜单统一接收鼠标路由（Qt.Popup 双窗口捕获冲突的根治）
+        QApplication.instance().installEventFilter(self)
+        self._loop = QEventLoop()
+        self._loop.exec_()
+        self._loop = None
+        QApplication.instance().removeEventFilter(self)
+        return self._result
+
+    def eventFilter(self, obj, ev):
+        t = ev.type()
+        if t == QEvent.MouseMove:
+            gp = ev.globalPos()
+            if self.sub_open is not None and self.sub_open.geometry().contains(gp):
+                tgt = self.sub_open
+            elif self.geometry().contains(gp):
+                tgt = self
+            else:
+                # 缝隙带（主/子菜单间2px接缝）或菜单外：不扰动 hover，避免闪
+                return False
+            if tgt.hover_idx != tgt._idx_at(gp):
+                ni = tgt._idx_at(gp)
+                if ni < 0 and tgt.hover_idx >= 0:
+                    # v68: pad边条/分隔线带不扰动当前hover（高亮保持），
+                    # 避免穿越间隙时高亮闪失、且杜绝任何连带关闭路径
+                    return False
+                tgt.hover_idx = ni
+                tgt.update()
+                tgt._sync_submenu()
+        elif t == QEvent.MouseButtonPress:
+            if ev.button() == Qt.LeftButton:
+                gp = ev.globalPos()
+                if self.sub_open is not None and self.sub_open.geometry().contains(gp):
+                    self.sub_open._press_at(gp)
+                elif self.geometry().contains(gp):
+                    self._press_at(gp)
+                elif not isinstance(obj, RoundedMenu):
+                    self.close_all()  # 菜单外点击 = 取消（缝隙带点击不关）
+        elif t == QEvent.KeyPress and ev.key() == Qt.Key_Escape:
+            self.close_all()
+        return False
+
+    # ---- 子菜单 ----
+    def _sync_submenu(self):
+        it = self.items[self.hover_idx] if 0 <= self.hover_idx < len(self.items) else None
+        if it is not None and it[0] == 'sub':
+            sub = it[2]
+            if self.sub_open is not sub:
+                self._close_submenu()
+                self.sub_open = sub
+                sub._layout()
+                r = self._rects[self.hover_idx]
+                gp = self.mapToGlobal(r.topRight())
+                x = gp.x() + 2
+                y = gp.y() - _MENU_PAD
+                scr = QApplication.screenAt(gp) or QApplication.primaryScreen()
+                if x + sub._w > scr.geometry().right():
+                    x = self.mapToGlobal(r.topLeft()).x() - sub._w - 2
+                sub.move(*sub._clamp(x, y, gp))
+                sub.show()
+        elif it is not None and self.sub_open is not None:
+            # v68: 只有hover落到"另一个明确条目"才关子菜单。hover=-1（pad边条/
+            # 分隔线）保持子菜单——进入子菜单的必经之路是主菜单右侧8px pad带，
+            # 旧逻辑hover=-1即关，鼠标慢速穿越必收（"有时自动收起"根因）。
+            self._close_submenu()
+
+    def _close_submenu(self):
+        if self.sub_open is not None:
+            self.sub_open.close_all()
+            self.sub_open = None
+
+    def close_all(self):
+        self._close_submenu()
+        self.close()
+
+    # ---- 交互 ----
+    def _idx_at(self, global_pos):
+        lp = self.mapFromGlobal(global_pos)
+        for i, r in enumerate(self._rects):
+            if r.contains(lp) and self.items[i][0] != 'sep':
+                return i
+        return -1
+
+    def _press_at(self, global_pos):
+        idx = self._idx_at(global_pos)
+        if idx < 0:
+            return
+        it = self.items[idx]
+        if it[0] == 'sub':
+            return  # 子菜单项由 hover 展开
+        self.root._result = it[1]
+        self.root.close_all()
+
+    def closeEvent(self, e):
+        self._close_submenu()
+        if self._loop is not None:
+            self._loop.quit()
+        super().closeEvent(e)
+
+    # ---- 绘制 ----
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 8, 8)
+        p.fillPath(path, _MENU_BG)
+        p.setPen(QPen(_MENU_BORDER, 1))
+        p.drawPath(path)
+        p.setFont(self._font)
+        for i, it in enumerate(self.items):
+            r = self._rects[i]
+            if it[0] == 'sep':
+                p.setPen(QPen(_MENU_BORDER, 1))
+                p.drawLine(r.left() + 10, r.center().y(), r.right() - 10, r.center().y())
+                continue
+            if i == self.hover_idx:
+                hp = QPainterPath()
+                hp.addRoundedRect(QRectF(r).adjusted(2, 2, -2, -2), 5, 5)
+                p.fillPath(hp, _MENU_HOVER)
+            text = it[1] if it[0] == 'sub' else it[2]
+            p.setPen(_MENU_FG)
+            p.drawText(r.adjusted(12, 0, -12, 0), Qt.AlignVCenter | Qt.AlignLeft, text)
+            if it[0] == 'sub':
+                p.drawText(r.adjusted(-14, 0, -6, 0), Qt.AlignVCenter | Qt.AlignRight, '▶')
+        p.end()
 
 # ═══════════════════════════════════════════════════════════
 #  v24: LEG_RIG 清空 —— 逐帧视觉判定证明:
@@ -184,6 +380,30 @@ def _approach(v, target, rate, dt):
 # ═══════════════════════════════════════════════════════════
 #  精灵库 — 加载/缩放/镜像预处理
 # ═══════════════════════════════════════════════════════════
+_BODY_BOTTOM_CACHE = {}   # v66: cacheKey→底缘行（像素扫描结果缓存）
+_BODY_BOTTOM_CACHE2 = {}  # v66: cacheKey→内容底边行（lift扫描缓存）
+
+
+def _crash_log(tag):
+    """v69-fix: QThread 未捕获异常在 C++ 层 std::terminate——无 traceback/无事件日志/
+    无 crash.log，进程静默死亡（"执行动作后自动关闭"根因）。此函数供线程 run() 的
+    兜底 except 写日志，死亡降级为"该动作空白但进程存活"。"""
+    import traceback
+    try:
+        if getattr(sys, 'frozen', False):
+            log = os.path.join(os.path.dirname(sys.executable), 'crash.log')
+        else:
+            log = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'crash.log')
+        with open(log, 'a', encoding='utf-8') as f:
+            f.write(time.strftime('%Y-%m-%d %H:%M:%S ') + tag + '\n'
+                    + traceback.format_exc() + '\n')
+    except Exception:
+        pass
+
+
+_crash_fh = None  # faulthandler 文件句柄全局持有（防GC关闭）
+
+
 class _LoadThread(QThread):
     """v48: 后台重建精灵——主线程同步load()会卡死UI（579帧×纯Python像素扫描）。
     线程内构建完整bank数据，finished后主线程原子swap，渲染期间不半态。"""
@@ -193,10 +413,16 @@ class _LoadThread(QThread):
         self.result = None
 
     def run(self):
-        b = SpriteBank()
-        b.draw_size = self.draw_size
-        b.load()
-        self.result = b
+        try:
+            b = SpriteBank()
+            b.draw_size = self.draw_size
+            b.load()
+            self.result = b
+        except Exception:
+            # v69-fix: QThread未捕获异常=std::terminate=进程静默死亡（无crash.log/
+            # 无事件日志/无traceback，"执行动作后自动关闭"根因之一）。捕获后记日志降级。
+            _crash_log('LoadThread')
+            self.result = None
 
 
 class _StateLoadThread(QThread):
@@ -208,7 +434,12 @@ class _StateLoadThread(QThread):
         self.lift = None
 
     def run(self):
-        self.imgs, self.lift = self.bank._build_state(self.state)
+        try:
+            self.imgs, self.lift = self.bank._build_state(self.state)
+        except Exception:
+            # v69-fix: 同上——懒加载线程异常不再杀死进程，记日志降级（该动作空白但存活）
+            _crash_log(f'StateLoadThread[{self.state}]')
+            self.imgs, self.lift = None, None
 
 
 class SpriteBank:
@@ -219,7 +450,9 @@ class SpriteBank:
              'play_dead', 'pet'}
     # v64: 一次性/低频状态懒加载——启动不预载，首次set_state触发后台异步装载，
     # 常驻集=交互高频七态，内存峰值大幅下降。
-    LAZY = {'happy', 'roll', 'stretch', 'pet', 'play_dead', 'surprised', 'sleep'}
+    # v67: dance/beg/bath 移入懒集（常驻-28MB纹理），首次触发走同步快路径。
+    LAZY = {'happy', 'roll', 'stretch', 'pet', 'play_dead', 'surprised',
+            'sleep', 'dance', 'beg', 'bath'}
     ASSET_SCALE = 1.05  # 纹理长边=屏上设备像素长边×1.05（1:1锐度+微余量，内存最小化）
 
     def __init__(self):
@@ -267,6 +500,9 @@ class SpriteBank:
                 self.alias[state] = owner
                 self.geo.setdefault(state, self.geo.get(owner, (1024, 1024)))
         # ── 装载：别名指向所有者列表；懒状态占位空表首次触发时装载 ──
+        # v67 启动快路径：FAST_BOOT 四态主线程同步限帧装载（首屏<300ms），
+        # 其余常驻态由调用方后台全量构建后 swap 补装。
+        fast = getattr(self, 'fast_boot', False)
         for state in ANIMS:
             if state in self.alias:
                 owner = self.alias[state]
@@ -277,6 +513,10 @@ class SpriteBank:
                 self.frames[state] = []
                 self.frames_m[state] = []
                 self.lift_map[state] = []
+            elif fast:
+                # v67: 全部常驻态限6帧同步装载（≈30帧<1s，首屏零空白），
+                # 完整帧表由后台 _LoadThread swap 补齐。
+                self._load_state(state, 6)
             else:
                 self._load_state(state)
         # v19: 逐帧切腿——run素材含gallop跳跃（逐帧body_bot位移达31px），
@@ -307,12 +547,35 @@ class SpriteBank:
             self.rig_parts[state] = parts
             self.rig_parts_m[state] = parts_m
 
+    def _sync_first_frame(self, state):
+        """v67: 懒状态首帧同步快路径——后台全量装载完成前先装1帧立即显示，
+        根治动作触发"卡顿+空白画面"（旧版异步装载期间get()返回空图=空白）。
+        全量线程完成后 _on_lazy_done 原子覆盖为完整帧表。"""
+        owner = self.alias.get(state, state)
+        if owner not in self.LAZY:
+            return
+        if self.frames.get(owner) or owner in self._lazy_threads:
+            return
+        try:
+            imgs, lift = self._build_state(owner, 1)
+        except Exception:
+            return
+        if imgs:
+            self.frames[owner] = imgs
+            self.frames_m[owner] = [None] * len(imgs)
+            self.lift_map[owner] = lift
+            self._loaded_order = getattr(self, '_loaded_order', [])
+            if owner not in self._loaded_order:
+                self._loaded_order.append(owner)
+
     def ensure_state(self, state):
-        """v64: 懒状态首次触发→后台异步装载（不阻塞渲染；装载期间get()返回空图跳过绘制）"""
+        """v64: 懒状态首次触发→后台异步装载（不阻塞渲染；装载期间get()返回空图跳过绘制）
+        v67: 先同步装首帧（<80ms）保证立即有画面，后台线程随后全量覆盖。"""
         if state not in self.LAZY or self.frames.get(state):
             return
         if state in self._lazy_threads:
             return
+        self._sync_first_frame(state)
         t = _StateLoadThread(self, state)
         self._lazy_threads[state] = t
         t.finished.connect(lambda s=state, th=t: self._on_lazy_done(s, th))
@@ -324,21 +587,55 @@ class SpriteBank:
             self.frames[state] = t.imgs
             self.frames_m[state] = [None] * len(t.imgs)
             self.lift_map[state] = t.lift
+            # v67: 全量帧表替换首帧快路径后，当前帧索引可能越界（首帧bank长度1），
+            # 通知窗口复位动画相位避免 IndexError/卡帧。
+            cb = getattr(self, 'on_state_reloaded', None)
+            if cb:
+                cb(state)
         t.deleteLater()
 
-    def _load_state(self, state):
-        imgs, lift = self._build_state(state)
+    def _load_state(self, state, frame_limit=None):
+        imgs, lift = self._build_state(state, frame_limit)
         self.frames[state] = imgs
         self.frames_m[state] = [None] * len(imgs)
         self.lift_map[state] = lift
+        # v66 LRU: 记录装载顺序（供卸载最久未用的懒状态）
+        self._loaded_order = getattr(self, '_loaded_order', [])
+        if state in self.LAZY and state not in self._loaded_order:
+            self._loaded_order.append(state)
 
-    def _build_state(self, state):
+    def unload_idle_lazy(self, active_state, keep=4):
+        """v66: 内存回收——已装载的懒状态超出 keep 个且非当前态时，
+        卸载最久未触发的（frames/frames_m/lift 清空回懒态占位）。
+        别名态(potty→sit)与当前态、常驻态不卸。返回卸载数。"""
+        order = getattr(self, '_loaded_order', [])
+        n = 0
+        for st in list(order):
+            if len(order) - n <= keep:
+                break
+            if st == active_state or not self.frames.get(st):
+                continue
+            # 有别名态指向它→不卸
+            if any(self.alias.get(s2) == st for s2 in self.alias):
+                continue
+            self.frames[st] = []
+            self.frames_m[st] = []
+            self.lift_map[st] = []
+            order.remove(st)
+            n += 1
+        return n
+
+    def _build_state(self, state, frame_limit=None):
         """v64: 单状态帧表构建。tight态按原比例缩放到按需分辨率（长边=draw_s）；
-        方画布态(walk认可版)走旧路径(scaled方框+质心居中)。"""
+        方画布态(walk认可版)走旧路径(scaled方框+质心居中)。
+        v67: frame_limit——只构建前N帧（启动快路径/懒状态首帧同步快路径），
+        调用方负责后续全量补装。"""
         base = asset_path()
         prefix, count, _f, _l, _i = ANIMS[state]
         tight = state in self.TIGHT
         draw = self._state_draw(state)
+        if frame_limit:
+            count = min(count, frame_limit)
         imgs = []
         for i in range(count):
             fn = os.path.join(base, f'{prefix}_{i:02d}.webp')
@@ -365,8 +662,13 @@ class SpriteBank:
             imgs, _sh = self._center_frames(imgs)
         # ── 每帧离地高度：内容包围盒底边相对全序列最大底边的抬升（归一化0..1）──
         # 纯Python抽样扫描：从底向上逐行、每8列取一点（脚底通常前几行即命中）
+        # v66: cacheKey缓存底边（动作重复触发/zoom重建不重扫，消除触发CPU尖峰）
         bottoms = []
         for im in imgs:
+            key = im.cacheKey()
+            if key in _BODY_BOTTOM_CACHE2:
+                bottoms.append(_BODY_BOTTOM_CACHE2[key])
+                continue
             buf = im.constBits()
             buf.setsize(im.byteCount())
             data = bytes(buf)   # bytes索引返回int，可直接比较
@@ -379,6 +681,9 @@ class SpriteBank:
                 if any(data[rowbase + c] > 16 for c in cols):
                     bottom = row
                     break
+            if len(_BODY_BOTTOM_CACHE2) > 2000:
+                _BODY_BOTTOM_CACHE2.clear()
+            _BODY_BOTTOM_CACHE2[key] = bottom
             bottoms.append(bottom)
         if bottoms:
             ground = max(bottoms)
@@ -397,7 +702,12 @@ class SpriteBank:
 
     @staticmethod
     def _body_bottom(img):
-        """内容底缘上方第一个'宽行'(>62%最大行宽)的行号=身体底缘；无内容返回None"""
+        """内容底缘上方第一个'宽行'(>62%最大行宽)的行号=身体底缘；无内容返回None。
+        v66: cacheKey缓存（同图不重扫，zoom重建/重复装配省CPU）。"""
+        key = img.cacheKey()
+        cache = _BODY_BOTTOM_CACHE
+        if key in cache:
+            return cache[key]
         w, h = img.width(), img.height()
         buf = img.constBits()
         buf.setsize(img.byteCount())
@@ -409,12 +719,19 @@ class SpriteBank:
             row_w.append(sum(1 for x in range(0, w * 4, 8) if data[rb + x] > 24))
         max_w = max(row_w)
         if max_w < 8:
+            cache[key] = None
             return None
         rows = [y for y in range(h) if row_w[y] > 0]
         bot = rows[-1]
         for y in range(bot, -1, -1):
             if row_w[y] > max_w * 0.62:
+                if len(cache) > 400:
+                    cache.clear()
+                cache[key] = y
                 return y
+        if len(cache) > 400:
+            cache.clear()
+        cache[key] = bot
         return bot
 
     @staticmethod
@@ -738,7 +1055,14 @@ class PetWindow(QWidget):
         self.bank = SpriteBank()
         # v2 高分辨率: 纹理尺寸=逻辑尺寸×dpr，Retina上设备像素1:1（不再2倍放大模糊）
         self.bank.draw_size = int(DRAW_SIZE * self.zoom * _target_dpr(self))
+        # v67: 启动快路径——主线程只同步装 FAST_BOOT 四态限帧表（<300ms首屏可见），
+        # 完整常驻集后台构建后原子swap（旧版同步全量=800+帧解码，首屏卡顿+空白）。
+        self.bank.fast_boot = True
         self.bank.load()
+        self.bank.on_state_reloaded = self._on_state_reloaded
+        self._fullbank_thread = _LoadThread(self.bank.draw_size)
+        self._fullbank_thread.finished.connect(self._on_fullbank_loaded)
+        self._fullbank_thread.start()
         self.particles = ParticleSystem()
         self.physics = Physics()
         # Windows原生扩展样式：宠物窗口不激活、不抢焦点（Tool行为的手感，无Tool的消失bug）
@@ -803,6 +1127,7 @@ class PetWindow(QWidget):
         self.leg_phase = 0.0    # 步态相位 [0, 2π)
         self.leg_amp = 0.0      # 摆幅系数（起步缓入，停止缓出）
         self._last_paint_dt = time.perf_counter()
+        self._tick_cur = 16     # v66: 当前定时器间隔（自适应）
 
         # 初始位置：屏幕底部（按缩放窗口尺寸定位）
         sg = QApplication.primaryScreen().geometry()
@@ -873,14 +1198,50 @@ class PetWindow(QWidget):
             pass
         if t._seq == getattr(self, '_load_seq', 0) and t.result is not None:
             self.bank = t.result
+            self.bank.on_state_reloaded = self._on_state_reloaded
             self.update()
         t.deleteLater()
+
+    def _on_fullbank_loaded(self):
+        """v67: 后台完整常驻集构建完成→原子swap。懒状态已装的首帧表保留
+        （full bank 的懒集是空占位，swap 后 _loaded_order 保留、frames 保留）。"""
+        t = self._fullbank_thread
+        self._fullbank_thread = None
+        if t.result is None:
+            t.deleteLater()
+            return
+        new = t.result
+        # 保留懒状态已装载的帧表（启动后用户触发过的动作不丢）
+        for st, fr in self.bank.frames.items():
+            if fr and st in new.LAZY:
+                new.frames[st] = fr
+                new.frames_m[st] = self.bank.frames_m.get(st) or [None] * len(fr)
+                new.lift_map[st] = self.bank.lift_map.get(st) or []
+        new._loaded_order = list(getattr(self.bank, '_loaded_order', []))
+        new.on_state_reloaded = self._on_state_reloaded
+        self.bank = new
+        self.update()
+        t.deleteLater()
+
+    def _on_state_reloaded(self, state):
+        """v67: 懒状态全量帧表覆盖首帧快路径后复位动画相位，防帧索引越界。"""
+        owner = self.bank.alias.get(state, state)
+        if self.bank.alias.get(self.state, self.state) == owner:
+            bank = self.bank.frames.get(owner) or []
+            if bank and self.frame_idx >= len(bank):
+                self.frame_idx = 0
+                self.anim_elapsed = 0.0
+        self.update()
 
     # ─────────── 状态切换 ───────────
     def set_state(self, s, duration=None):
         if s not in ANIMS:
             return
         self.bank.ensure_state(s)   # v64: 懒状态首次触发→后台异步装载
+        # v67: 懒状态首帧同步快路径——ensure_state 的后台线程需0.5-2s才完成，
+        # 期间旧代码get()返回空图=空白画面。先同步装1帧(<80ms)立即显示。
+        if s in self.bank.LAZY:
+            self.bank._sync_first_frame(s)
         prev = self.state
         # 同状态重入（AI续走）：保持步态帧连续，不重置动画相位——
         # 否则每次AI重新决策都会把frame_idx硬切回0，步态周期性卡顿
@@ -901,11 +1262,19 @@ class PetWindow(QWidget):
         if duration:
             self.state_duration[s] = duration
         if s == 'bark':
-            self.particles.emit(ParticleSystem.BUBBLE, CANVAS / 2, 60, 1, text='汪!')
+            self.particles.emit(ParticleSystem.BUBBLE, CANVAS / 2, 60, 1, text=BARK_TEXT)
         elif s == 'happy':
             self.particles.emit(ParticleSystem.HEART, CANVAS / 2, 90, 4)
         elif s == 'eat':
-            self.say('好吃!')
+            self.say(EAT_TEXT)
+        # v66: LRU touch（当前懒状态移到队尾）+ 超量懒状态卸载回收内存
+        owner = self.bank.alias.get(s, s)
+        if owner in self.bank.LAZY:
+            order = getattr(self.bank, '_loaded_order', [])
+            if owner in order:
+                order.remove(owner)
+                order.append(owner)
+        self.bank.unload_idle_lazy(owner)
 
     def state_time(self):
         return time.perf_counter() - self.state_started
@@ -1048,7 +1417,25 @@ class PetWindow(QWidget):
         self.particles.update(dt)
         self.update_stats(dt)
         self.emit_state_particles(dt)
-        self.update()
+        # ── v66 自适应 tick：静态状态降帧省CPU，动作/过渡/粒子活跃保持16ms ──
+        # 源动画均24fps原生(frame_ms≈42-114)，16ms tick重绘一半以上是无效帧。
+        # 静态期 tick=源帧率（源动画本身20fps左右，更高=重绘同一帧纯耗CPU）；
+        # 动作/过渡/粒子/物理/拖拽活跃期=16ms，保证动作质量不掉帧。
+        moving = self.state in ('walk', 'run', 'potty_run') and abs(self.vel_x) > 2
+        active = (self.pop_t > 0 or self.antic_t > 0 or self.settle_t > 0
+                  or self.turn_phase is not None or self.micro is not None
+                  or self.dragging or self.physics.active
+                  or self.sleep_twitch_t > 0 or self.particles.particles
+                  or self.leg_amp > 0.01)
+        frame_ms = ANIMS[self.state][2]
+        tgt = 16 if (active or moving) else max(16, min(66, frame_ms))
+        if tgt != self._tick_cur:
+            self._tick_cur = tgt
+            self.timer.setInterval(tgt)
+        # v66: 静态且帧未变→跳过重绘（透明窗无变化=零绘制CPU）
+        if (active or moving
+                or getattr(self, '_last_drawn', None) != (self.state, self.frame_idx, self.flipped)):
+            self.update()
 
     # ─────────── 行为AI ───────────
     def update_ai(self, dt):
@@ -1441,6 +1828,7 @@ class PetWindow(QWidget):
 
         # ── 粒子 ──
         self.particles.draw(painter)
+        self._last_drawn = (self.state, self.frame_idx, self.flipped)  # v66 跳绘标记
         painter.end()
 
     # ─────────── 交互 ───────────
@@ -1501,47 +1889,47 @@ class PetWindow(QWidget):
         self.happiness = min(100, self.happiness + 6)
 
     def contextMenuEvent(self, event):
-        # v25 (P3): 统一菜单工厂——弹窗窗口自身WA_TranslucentBackground，
-        # 圆角样式之外的区域真正透明，根治"四角白角"。子菜单同样处理。
-        menu = make_menu(self)
+        # v67: 自绘圆角菜单——macOS 下 QMenu+border-radius 圆角外渲染白底，
+        # QPainterPath 自绘 popup 与主窗口同机制，Windows/macOS 像素级一致。
+        menu = RoundedMenu(self)
 
-        a_tease = menu.addAction('🐾 退出逗弄' if self.mode == 'tease' else '🐾 逗逗我')
-        menu.addSeparator()
-        a_feed = menu.addAction('🍖 喂食')
-        a_pet = menu.addAction('🤚 摸摸头')
-        menu.addSeparator()
-        trick_menu = make_menu(self, '🎪 表演')
-        menu.addMenu(trick_menu)
-        t_happy = trick_menu.addAction('开心跳跃')
-        t_roll = trick_menu.addAction('打滚')
-        t_dance = trick_menu.addAction('跳舞')
-        t_bark = trick_menu.addAction('叫一声')
-        t_lick = trick_menu.addAction('舔毛')
-        t_beg = trick_menu.addAction('作揖')
-        t_bath = trick_menu.addAction('洗澡')
-        menu.addSeparator()
-        # v25 (P9): 缩放子菜单——放大/缩小/重置，比例持久化
-        size_menu = make_menu(self, '🔍 大小')
-        menu.addMenu(size_menu)
-        z_up = size_menu.addAction('➕ 放大')
-        z_down = size_menu.addAction('➖ 缩小')
-        z_reset = size_menu.addAction('↩ 重置')
-        menu.addSeparator()
-        mode_menu = make_menu(self, '📍 模式')
-        menu.addMenu(mode_menu)
-        m_taskbar = mode_menu.addAction('任务栏漫步')
-        m_desktop = mode_menu.addAction('桌面漫游')
-        menu.addSeparator()
-        a_sleep = menu.addAction('💤 去睡觉')
-        a_stats = menu.addAction('📊 查看状态')
-        menu.addSeparator()
-        a_quit = menu.addAction('❌ 退出')
+        tease_key = 'tease'
+        menu.add_item(tease_key, '🐾 退出逗弄' if self.mode == 'tease' else '🐾 逗逗我')
+        menu.add_sep()
+        menu.add_item('feed', '🍖 喂食')
+        menu.add_item('pet', '🤚 摸摸头')
+        menu.add_sep()
+        trick_menu = RoundedMenu(self)
+        trick_menu.add_item('happy', '开心跳跃')
+        trick_menu.add_item('roll', '打滚')
+        trick_menu.add_item('dance', '跳舞')
+        trick_menu.add_item('bark', '叫一声')
+        trick_menu.add_item('lick', '舔毛')
+        trick_menu.add_item('beg', '作揖')
+        trick_menu.add_item('bath', '洗澡')
+        menu.add_sub('🎪 表演', trick_menu)
+        menu.add_sep()
+        size_menu = RoundedMenu(self)
+        size_menu.add_item('zoom_up', '➕ 放大')
+        size_menu.add_item('zoom_down', '➖ 缩小')
+        size_menu.add_item('zoom_reset', '↩ 重置')
+        menu.add_sub('🔍 大小', size_menu)
+        menu.add_sep()
+        mode_menu = RoundedMenu(self)
+        mode_menu.add_item('mode_taskbar', '任务栏漫步')
+        mode_menu.add_item('mode_desktop', '桌面漫游')
+        menu.add_sub('📍 模式', mode_menu)
+        menu.add_sep()
+        menu.add_item('sleep', '💤 去睡觉')
+        menu.add_item('stats', '📊 查看状态')
+        menu.add_sep()
+        menu.add_item('quit', '❌ 退出')
 
-        action = menu.exec_(event.globalPos())
+        action = menu.exec_menu(event.globalPos())
         if action is None:
             return
 
-        if action == a_tease:
+        if action == 'tease':
             if self.mode == 'tease':
                 self.mode = 'taskbar'
                 sg = QApplication.primaryScreen().geometry()
@@ -1551,54 +1939,54 @@ class PetWindow(QWidget):
                 self.mode = 'tease'
                 self.set_state('run')
                 self.say('来抓我呀!')
-        elif action == a_feed:
+        elif action == 'feed':
             self.set_state('eat', duration=6.56)
             self.fullness = min(100, self.fullness + 20)
             self.happiness = min(100, self.happiness + 5)
-        elif action == a_pet:
+        elif action == 'pet':
             self.happiness = min(100, self.happiness + 10)
             # v57: 摸摸头=独立pet互动(人手抚摸+小狗享受)，与舔毛lick区分
             self.set_state('pet', duration=4.6)
-        elif action == t_happy:
+        elif action == 'happy':
             self.set_state('happy', duration=5.1)
-        elif action == t_roll:
+        elif action == 'roll':
             self.set_state('roll', duration=5.1)
-        elif action == t_dance:
+        elif action == 'dance':
             self.set_state('dance', duration=10.3)
-        elif action == t_bark:
+        elif action == 'bark':
             self.set_state('bark', duration=5.1)
-        elif action == t_lick:
+        elif action == 'lick':
             self.set_state('lick', duration=4.0)
-        elif action == t_beg:
+        elif action == 'beg':
             self.set_state('beg', duration=5.1)
-        elif action == t_bath:
+        elif action == 'bath':
             self.set_state('bath', duration=10.3)
-        elif action == m_taskbar:
+        elif action == 'mode_taskbar':
             self.mode = 'taskbar'
             sg = QApplication.primaryScreen().geometry()
             self.floor_y = sg.bottom() - self.height() - 45
             self.move(self.x(), self.floor_y)
             self.set_state('idle')
-        elif action == m_desktop:
+        elif action == 'mode_desktop':
             self.mode = 'desktop'
             self.set_state('idle')
             self.say('自由啦!')
-        elif action == z_up:
+        elif action == 'zoom_up':
             self.set_zoom(self.zoom + ZOOM_STEP)
             self.say(f'大小 {self.zoom:.2f}x')
-        elif action == z_down:
+        elif action == 'zoom_down':
             self.set_zoom(self.zoom - ZOOM_STEP)
             self.say(f'大小 {self.zoom:.2f}x')
-        elif action == z_reset:
+        elif action == 'zoom_reset':
             self.set_zoom(ZOOM_DEFAULT)
             self.say('恢复默认大小')
-        elif action == a_sleep:
+        elif action == 'sleep':
             self.set_state('sleep')
-        elif action == a_stats:
+        elif action == 'stats':
             self.say(f'饱食{int(self.fullness)} 开心{int(self.happiness)} '
                       f'精力{int(self.energy)}')
             self.particles.emit(ParticleSystem.SPARKLE, CANVAS / 2, 70, 4)
-        elif action == a_quit:
+        elif action == 'quit':
             QApplication.quit()
 
 
@@ -1693,12 +2081,79 @@ def _activate_existing_instance():
         user32.SetForegroundWindow(hwnd)
 
 
+def _is_window_responsive(hwnd, timeout_ms=1500):
+    """v66-fix: 用 SendMessageTimeout(SMTO_ABORTIFHUNG) 探测旧实例消息队列是否存活。
+    旧实例事件循环卡死（僵尸）时该调用立即失败返回，不会阻塞本进程。"""
+    import ctypes
+    SMTO_ABORTIFHUNG = 0x0002
+    result = ctypes.c_long()
+    ok = ctypes.windll.user32.SendMessageTimeoutW(
+        int(hwnd), 0x0000, 0, 0, SMTO_ABORTIFHUNG, timeout_ms, ctypes.byref(result))
+    return bool(ok)
+
+
+def _kill_process_of_hwnd(hwnd):
+    """v66-fix: 终止僵死旧实例进程（释放单例锁），不碰本进程"""
+    import ctypes
+    pid = ctypes.c_ulong()
+    ctypes.windll.user32.GetWindowThreadProcessId(int(hwnd), ctypes.byref(pid))
+    if not pid.value or pid.value == os.getpid():
+        return False
+    PROCESS_TERMINATE = 0x0001
+    kernel32 = ctypes.windll.kernel32
+    ph = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid.value)
+    if not ph:
+        return False
+    kernel32.TerminateProcess(ph, 0)
+    kernel32.CloseHandle(ph)
+    return True
+
+
+def _release_singleton_mutex():
+    """v66-fix: 关闭本进程持有的mutex句柄。
+    内核mutex对象在所有句柄关闭后才销毁——若不先关自己的首次句柄，
+    杀死旧进程后第二次CreateMutexW仍返回ALREADY_EXISTS（误判接管失败）。"""
+    global _singleton_mutex
+    if _singleton_mutex:
+        import ctypes
+        ctypes.windll.kernel32.CloseHandle(_singleton_mutex)
+        _singleton_mutex = None
+
+
 def main():
     global _pet_window
     _install_excepthook()
+    # v69-fix: C 级崩溃（Qt C++ abort/段错误/栈溢出）不经过 excepthook、不留任何日志，
+    # 进程"静默消失"。faulthandler 注册原生信号处理，把 traceback 写进 crash.log，
+    # 下次再复现即可定位。句柄全局持有防GC。
+    global _crash_fh
+    try:
+        import faulthandler
+        if getattr(sys, 'frozen', False):
+            _crash_fh = open(os.path.join(os.path.dirname(sys.executable), 'crash.log'),
+                             'a', encoding='utf-8')
+        else:
+            _crash_fh = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'crash.log'),
+                             'a', encoding='utf-8')
+        faulthandler.enable(file=_crash_fh, all_threads=True)
+    except Exception:
+        _crash_fh = None
     if not _acquire_single_instance():
-        _activate_existing_instance()  # 不再静默退出：激活已有窗口给用户反馈
-        return
+        # v66-fix: 旧实例存在时先探活——响应正常才"激活已有窗口"；
+        # 僵死（事件循环卡死）则终止旧进程接管启动，
+        # 根治"新EXE永远只激活僵死旧窗口、用户看到狗不动"的死循环。
+        hwnd = _find_existing_window()
+        if hwnd and _is_window_responsive(hwnd):
+            _activate_existing_instance()
+            return
+        took_over = False
+        if hwnd and _kill_process_of_hwnd(hwnd):
+            time.sleep(0.6)  # 等旧进程释放mutex
+            _release_singleton_mutex()  # 关本进程句柄，内核对象才销毁
+            took_over = _acquire_single_instance()
+        if not took_over:
+            _activate_existing_instance()
+            return
     # 高DPI支持：必须在QApplication创建前设置
     # v49-fix: PassThrough 舍入策略——用监视器真实缩放(如1.5x)，不做整数舍入。
     # 根治 Windows 高缩放下"后缓冲尺寸≠物理窗口尺寸"的合成错位（黑屏/狗碎片）：
