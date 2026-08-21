@@ -75,16 +75,16 @@ jobs:
           codesign --force --deep --sign - "dist/金毛犬桌面宠物.app"
           codesign -dv "dist/金毛犬桌面宠物.app" 2>&1 | head -5
 
-      - name: Upload .app artifact（套stage外层目录：upload-artifact上传目录不保留目录本身，直接传.app会导致下载后Contents散开互覆）
+      - name: Upload .app artifact（tar打包：upload-artifact的zip压缩会破坏.app内的symlink且不留目录本身，必须tar保链传输）
         run: |
-          mkdir -p stage
-          mv "dist/金毛犬桌面宠物.app" "stage/${{ matrix.arch }}.app"
+          export COPYFILE_DISABLE=1   # 防macOS tar塞入._元数据文件污染bundle
+          tar -cf "app-${{ matrix.arch }}.tar" -C dist "金毛犬桌面宠物.app"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: pet-macos-app-${{ matrix.arch }}
-          path: stage/
+          path: "app-${{ matrix.arch }}.tar"
           retention-days: 30
 
   merge:
@@ -95,12 +95,23 @@ jobs:
       - name: Checkout（需要merge_universal.sh）
         uses: actions/checkout@v4
 
-      - name: Download both arch .app artifacts
+      - name: Download both arch .app artifacts（tar解包：symlink经tar完整保留，zip会破坏）
         uses: actions/download-artifact@v4
         with:
           pattern: pet-macos-app-*
           merge-multiple: true
           path: apps
+
+      - name: Extract tarballs to .app
+        run: |
+          cd apps
+          ls -la
+          export COPYFILE_DISABLE=1
+          tar -xf app-arm64.tar && rm app-arm64.tar
+          tar -xf app-x86_64.tar && rm app-x86_64.tar
+          ls -la
+          echo "--- symlink抽查（必须有Versions/Current等Qt链接）---"
+          find arm64.app -type l | head -5
 
       - name: lipo merge to Universal2
         run: |
