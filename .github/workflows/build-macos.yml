@@ -75,14 +75,16 @@ jobs:
           codesign --force --deep --sign - "dist/金毛犬桌面宠物.app"
           codesign -dv "dist/金毛犬桌面宠物.app" 2>&1 | head -5
 
-      - name: Upload .app artifact（重命名为架构名，避免merge job下载时目录冲突）
-        run: mv "dist/金毛犬桌面宠物.app" "dist/${{ matrix.arch }}.app"
+      - name: Upload .app artifact（套stage外层目录：upload-artifact上传目录不保留目录本身，直接传.app会导致下载后Contents散开互覆）
+        run: |
+          mkdir -p stage
+          mv "dist/金毛犬桌面宠物.app" "stage/${{ matrix.arch }}.app"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: pet-macos-app-${{ matrix.arch }}
-          path: "dist/${{ matrix.arch }}.app"
+          path: stage/
           retention-days: 30
 
   merge:
