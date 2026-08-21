@@ -1,6 +1,8 @@
 name: build-macos-dmg
-# 金毛犬桌面宠物 v1 macOS双架构构建（复制自拉布拉多验证版workflow，改名适配）
-# 关键：无ad-hoc签名+网络下载quarantine=朋友打开报"已损坏"（右键打开都绕不过），v54教训
+# 金毛犬桌面宠物 macOS Universal2 单包构建（v72升级：arm64+x86_64合并为通用二进制，一个DMG兼容所有芯片）
+# 流程：矩阵双架构各自构建.app → merge job用lipo合并所有Mach-O为Universal2 → 重签名 → 单DMG
+# 关键：无ad-hoc签名+网络下载quarantine=报"已损坏"（右键打开都绕不过），v54教训
+# 关键：lipo合并破坏原签名，合并后必须重新codesign，否则"已损坏"复发
 
 on:
   push:
@@ -12,17 +14,15 @@ permissions:
 
 jobs:
   build:
-    # 矩阵构建：同时产出 Apple Silicon (arm64) 和 Intel (x86_64) 两个DMG
+    # 矩阵构建：两架构各出一个.app（不再各自打DMG/Release）
     strategy:
       fail-fast: false   # 一个架构失败不影响另一个
       matrix:
         include:
           - runner: macos-15        # Apple Silicon runner
             arch: arm64
-            release_name: "金毛犬桌面宠物 v1 (macOS Apple Silicon / M系列芯片)"
           - runner: macos-15-intel  # Intel runner（GitHub最后一个x86_64镜像，可用至2027年8月）
             arch: x86_64
-            release_name: "金毛犬桌面宠物 v1 (macOS Intel)"
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
@@ -48,7 +48,6 @@ jobs:
           sips -z 128 128   icon.png --out app.iconset/icon_128x128.png
           sips -z 256 256   icon.png --out app.iconset/icon_128x128@2x.png
           sips -z 256 256   icon.png --out app.iconset/icon_256x256.png
-          sips -z 512 512   icon.png --out app.iconset/icon_256x256@2x.png
           sips -z 512 512   icon.png --out app.iconset/icon_512x512.png
           sips -z 1024 1024 icon.png --out app.iconset/icon_512x512@2x.png
           iconutil -c icns app.iconset -o app.icns
@@ -71,10 +70,46 @@ jobs:
           git commit -m "CI: build failure log (${{ matrix.arch }})" || true
           git push -f origin ci-logs-golden-${{ matrix.arch }} || true
 
-      - name: Ad-hoc codesign（必须！无签名+quarantine=报"已损坏"打不开。ad-hoc后仅报"无法验证开发者"，一键脚本可绕过）
+      - name: Ad-hoc codesign（单架构先签名，保持切片有效；merge后还会再签一次）
         run: |
           codesign --force --deep --sign - "dist/金毛犬桌面宠物.app"
           codesign -dv "dist/金毛犬桌面宠物.app" 2>&1 | head -5
+
+      - name: Upload .app artifact（重命名为架构名，避免merge job下载时目录冲突）
+        run: mv "dist/金毛犬桌面宠物.app" "dist/${{ matrix.arch }}.app"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pet-macos-app-${{ matrix.arch }}
+          path: "dist/${{ matrix.arch }}.app"
+          retention-days: 30
+
+  merge:
+    # lipo合并双架构 → Universal2单DMG（Universal合并只能在macOS上做，lipo是系统自带）
+    needs: build
+    runs-on: macos-15
+    steps:
+      - name: Checkout（需要merge_universal.sh）
+        uses: actions/checkout@v4
+
+      - name: Download both arch .app artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pet-macos-app-*
+          merge-multiple: true
+          path: apps
+
+      - name: lipo merge to Universal2
+        run: |
+          ls apps/
+          bash merge_universal.sh apps/arm64.app apps/x86_64.app "金毛犬桌面宠物.app"
+
+      - name: Ad-hoc codesign（必须！lipo合并破坏签名，不重签=报"已损坏"）
+        run: |
+          codesign --force --deep --sign - "金毛犬桌面宠物.app"
+          codesign -dv "金毛犬桌面宠物.app" 2>&1 | head -5
+          codesign --verify --deep --strict "金毛犬桌面宠物.app" && echo "签名验证通过"
 
       - name: 一键打开脚本（朋友双击即用：自动装进Applications+清quarantine+启动）
         # 关键细节：DMG卷只读，脚本必须先cp到/Applications再xattr，卷内直接清会静默失败
@@ -94,43 +129,46 @@ jobs:
           EOF
           chmod +x "双击打开.command"
 
-      - name: Package DMG
+      - name: Package DMG（单包Universal，不再区分架构）
         run: |
           rm -rf dmg_stage
           mkdir dmg_stage
-          cp -R "dist/金毛犬桌面宠物.app" dmg_stage/
+          cp -R "金毛犬桌面宠物.app" dmg_stage/
           cp "双击打开.command" dmg_stage/
           chmod +x "dmg_stage/双击打开.command"
           ln -s /Applications dmg_stage/Applications
-          hdiutil create -volname "金毛犬桌面宠物" -srcfolder dmg_stage -ov -format UDZO "GoldenPet-v2-macOS-${{ matrix.arch }}.dmg"
+          hdiutil create -volname "金毛犬桌面宠物" -srcfolder dmg_stage -ov -format UDZO "GoldenPet-v2-macOS-Universal.dmg"
 
       - name: Verify DMG
         run: |
-          hdiutil verify "GoldenPet-v2-macOS-${{ matrix.arch }}.dmg"
+          hdiutil verify "GoldenPet-v2-macOS-Universal.dmg"
           ls -lh *.dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pet-macos-dmg-${{ matrix.arch }}
-          path: "GoldenPet-v2-macOS-${{ matrix.arch }}.dmg"
+          name: pet-macos-dmg-universal
+          path: "GoldenPet-v2-macOS-Universal.dmg"
           retention-days: 30
 
-      - name: Cleanup previous release（重建干净的Release）
+      - name: Cleanup previous releases（清理旧的分架构Release+旧universal，重建干净的Release）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release delete golden-v2-macos-${{ matrix.arch }} --yes --cleanup-tag 2>/dev/null || true
+        run: |
+          gh release delete golden-v2-macos-arm64 --yes --cleanup-tag 2>/dev/null || true
+          gh release delete golden-v2-macos-x86_64 --yes --cleanup-tag 2>/dev/null || true
+          gh release delete golden-v2-macos-universal --yes --cleanup-tag 2>/dev/null || true
 
       - name: Create Release（公开下载链接，朋友无需登录即可下载）
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: golden-v2-macos-${{ matrix.arch }}
-          name: ${{ matrix.release_name }}
+          tag_name: golden-v2-macos-universal
+          name: "金毛犬桌面宠物 v1 (macOS 通用版 — Apple Silicon 与 Intel 均适用)"
           body: |
-            macOS版金毛犬桌面宠物安装包（${{ matrix.arch }}架构）。
-            【选哪个版本】苹果菜单 → 关于本机：处理器显示"Apple M1/M2/M3/M4"→下载arm64版；显示"Intel"→下载x86_64版。下错版本会打不开！
+            macOS版金毛犬桌面宠物安装包（Universal2通用版）。
+            【无需选择版本】一个安装包同时兼容 Apple Silicon（M1/M2/M3/M4）和 Intel 芯片的Mac，直接下载即可。
             【安装】双击DMG → 把"金毛犬桌面宠物"图标拖到Applications文件夹。
             【首次打开（关键）】打开DMG里的"双击打开.command"（会弹出终端窗口自动处理安全限制并启动）。
             备选：在访达里右键点击应用→选择"打开"→弹窗里再点"打开"。
             仍提示"已损坏"：打开终端粘贴执行 xattr -cr /Applications/金毛犬桌面宠物.app 再双击打开。
-          files: "GoldenPet-v2-macOS-${{ matrix.arch }}.dmg"
+          files: "GoldenPet-v2-macOS-Universal.dmg"
