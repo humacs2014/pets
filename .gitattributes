@@ -1,0 +1,2 @@
+# shell 脚本强制 LF（macOS CI runner 上 CRLF 会让 bash 报 \r 命令找不到）
+*.sh text eol=lf
