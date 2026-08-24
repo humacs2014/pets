@@ -22,3 +22,6 @@ keyhex.txt
 *.log
 _*.ps1
 _walksrc/
+_archive/
+assets/_bk_*/
+assets/_bk_*
