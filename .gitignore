@@ -22,4 +22,3 @@ keyhex.txt
 *.log
 _*.ps1
 _walksrc/
-build-macos.yml
