@@ -66,8 +66,8 @@ ANIMS = {
     #   frame_ms 一律恢复为 源时长/帧数，动作速度=Agnes生成时的真实动物速度。
     #   walk/run(步态循环+腿装配)、eat(定制碗)、sleep(10s含intro)、lick(双周期定制)为认可版，保持。
     'idle':      ('idle',      101, 50,  True,  0),   # 5.05s = 源5.04s
-    'walk':      ('walk',      32, 83,  True,  0),   # v75: 3原生周期64帧stride2=32帧@83ms≈2.66s循环, 修"重复播放"(19帧2周期1.6s)
-    'run':       ('run',       15, 54,  True,  0),
+    'walk':      ('walk',      28, 70,  True,  0),   # v86: 同步mochi_pet 28帧@70ms
+    'run':       ('run',       88, 42,  True, 0),   # v100: 长循环88原生帧@42ms
     'eat':       ('eat',       34, 96,  True,  0),    # 定制认可版(碗烤入),不升帧
     'bark':      ('bark',      57, 90,  True,  0),    # 5.13s = 源5.04s
     'sleep':     ('sleep',     51, 110, True,  39),   # v50 P3: 同源重生成(完全侧躺四脚摊开) 39 intro+12 loop
@@ -76,7 +76,7 @@ ANIMS = {
     #   8-31单舔毛周期正播+30-9倒播ping-pong(抬回=无缝循环)，duration配套4.0
     'lick':      ('lick',      54, 74,  True,  8),
     'happy':     ('happy',     121, 42, False, 0),  # v56: 24fps原生全帧(原62@82ms=12fps掉帧+模糊)
-    'roll':      ('roll',      121, 42, False, 0),    # v54: puppy管线重生成 24fps原生全帧 5.08s 一次性(站→仰滚→坐)
+    'roll':      ('roll',      47, 42, False, 0),    # v107: 裁纯躺滚段(源44-90)消站→躺"从小变大"，帧数同步47
     'dance':     ('dance',     57, 90,  True,  0),    # 5.13s = 源5.04s
     'stretch':   ('stretch',   117, 43, False, 0),    # 5.03s = 源5.04s
     'beg':       ('beg',       56, 91,  True,  0),    # 5.10s = 源5.04s
@@ -84,7 +84,10 @@ ANIMS = {
     'surprised': ('surprised', 45, 114, False, 0),    # 5.13s = 源5.04s 一次性
     'play_dead': ('play_dead', 68, 75,  False, 0),    # 5.10s = 源5.04s 一次性
     'pet':       ('pet',       107, 42, False, 0),    # v57: 独立摸摸头互动(人手抚摸+小狗享受) 24fps原生 一次性 4.5s
-    'potty_run': ('run',       15, 54,  True,  0),  # 复用run帧，帧数必须与run一致
+    'kiss':      ('kiss',      121, 42, False, 0),    # v100: 亲亲我 一次性 5.08s
+    'wave':      ('wave',      57, 42,  True,  0),    # v100: 挥挥手 @42原生速度
+    'type':      ('type',      85, 42,  True, 0),    # v111: type重生成85原生帧长循环@42
+    'potty_run': ('run',       88, 42,  True, 0),  # 复用run帧，帧数必须与run一致
     'potty':     ('sit',       63, 80,  True,  22),   # 复用sit帧(同v53)
 }
 
@@ -454,7 +457,8 @@ class SpriteBank:
     # 常驻集=交互高频七态，内存峰值大幅下降。
     # v67: dance/beg/bath 移入懒集（常驻-28MB纹理），首次触发走同步快路径。
     LAZY = {'happy', 'roll', 'stretch', 'pet', 'play_dead', 'surprised',
-            'sleep', 'dance', 'beg', 'bath'}
+            'sleep', 'dance', 'beg', 'bath',
+            'kiss', 'wave', 'type'}   # v100: 表演低频三态懒加载(219帧常驻+数百MB内存)
     ASSET_SCALE = 1.05  # 纹理长边=屏上设备像素长边×1.05（1:1锐度+微余量，内存最小化）
 
     def __init__(self):
@@ -471,7 +475,9 @@ class SpriteBank:
     # v73: 主体视觉尺寸补偿——tight路径按画布长边缩放，视频原生取景小的状态
     # (roll躺侧/378, dance直立窄身, pet含手) 屏上主体会明显小于idle(540)。
     # 系数按 bbox/canvas 占比向idle对齐标定（用户肉眼验收后微调）。
-    SIZE_COMP = {'roll': 1.42}   # v75: roll侧躺bbox高仅idle的65%→放大; pet/dance高已=idle基线(543/545/542)不放大
+    # v76: 清空——SIZE_COMP在tight路径数学失效(draw_s含COMP与k=DRAW/draw_s抵消, 几何不变),
+    # 视觉尺寸一律由 extract_frames.TARGET_H 资产层标定 (walk 560/roll 500 对齐 idle 546)。
+    SIZE_COMP = {}
 
     def _state_draw(self, state):
         """v64: 每状态按需分辨率。旧版统一draw=500(dpr2)——方画布空白也占长边，
@@ -614,25 +620,9 @@ class SpriteBank:
             self._loaded_order.append(state)
 
     def unload_idle_lazy(self, active_state, keep=4):
-        """v66: 内存回收——已装载的懒状态超出 keep 个且非当前态时，
-        卸载最久未触发的（frames/frames_m/lift 清空回懒态占位）。
-        别名态(potty→sit)与当前态、常驻态不卸。返回卸载数。"""
-        order = getattr(self, '_loaded_order', [])
-        n = 0
-        for st in list(order):
-            if len(order) - n <= keep:
-                break
-            if st == active_state or not self.frames.get(st):
-                continue
-            # 有别名态指向它→不卸
-            if any(self.alias.get(s2) == st for s2 in self.alias):
-                continue
-            self.frames[st] = []
-            self.frames_m[st] = []
-            self.lift_map[st] = []
-            order.remove(st)
-            n += 1
-        return n
+        """v78: 停用懒卸载——卸载后二次触发=首帧静帧0.5-2s（用户报"卡顿一下才开始"）。
+        懒状态总量~10×100帧tight纹理，常驻内存可接受；启动后由_warm_lazy后台预热。"""
+        return 0
 
     def _build_state(self, state, frame_limit=None):
         """v64: 单状态帧表构建。tight态按原比例缩放到按需分辨率（长边=draw_s）；
@@ -1231,6 +1221,18 @@ class PetWindow(QWidget):
         self.bank = new
         self.update()
         t.deleteLater()
+        # v78: 常驻集就绪后延迟后台预热全部懒状态——根治首触"卡顿一下才开始"
+        QTimer.singleShot(2000, self._warm_lazy_states)
+
+    def _warm_lazy_states(self):
+        """v78: 后台逐个预热未装载的懒状态（直起后台线程，绕过主线程同步首帧块），
+        用户首次触发动作时帧表已就绪=零卡顿。"""
+        for st in sorted(self.bank.LAZY):
+            if not self.bank.frames.get(st) and st not in self.bank._lazy_threads:
+                t = _StateLoadThread(self.bank, st)
+                self.bank._lazy_threads[st] = t
+                t.finished.connect(lambda s=st, th=t: self.bank._on_lazy_done(s, th))
+                t.start()
 
     def _on_state_reloaded(self, state):
         """v67: 懒状态全量帧表覆盖首帧快路径后复位动画相位，防帧索引越界。"""
@@ -1262,9 +1264,9 @@ class PetWindow(QWidget):
             self.frame_idx = 0
         self.roll_angle = 0.0
         self.pop_t = 0.0 if same_move else 0.16
-        # 起步预备动作：起跑前先下蹲蓄力
+        # 起步预备动作：起跑前先下蹲蓄力（v78: 0.18→0.10，用户报"卡顿一下才开始"）
         if s in ('walk', 'run', 'potty_run') and prev not in ('walk', 'run', 'potty_run'):
-            self.antic_t = 0.18
+            self.antic_t = 0.10
         # 停止缓冲：急停时身体前倾挤压
         if prev in ('walk', 'run', 'potty_run') and s not in ('walk', 'run', 'potty_run'):
             self.settle_t = 0.28
@@ -1585,7 +1587,7 @@ class PetWindow(QWidget):
             elif r < 0.76:
                 self.set_state('lick', duration=4.0)
             elif r < 0.84:
-                self.set_state('roll', duration=5.1)
+                self.set_state('roll', duration=2.0)
             elif r < 0.92:
                 self.set_state('dance', duration=10.3)
             else:
@@ -1599,7 +1601,7 @@ class PetWindow(QWidget):
             elif r < 0.74:
                 self.set_state('lick', duration=4.0)
             elif r < 0.84:
-                self.set_state('roll', duration=5.1)
+                self.set_state('roll', duration=2.0)
             else:
                 self.set_state('idle')
 
@@ -1717,7 +1719,7 @@ class PetWindow(QWidget):
 
         # ── 起步预备动作（下蹲蓄力）──
         if self.antic_t > 0:
-            p = self.antic_t / 0.18
+            p = self.antic_t / 0.10
             sy *= 1.0 - 0.10 * p
             sx *= 1.0 + 0.07 * p
             rot -= self.facing * 3.0 * p
@@ -1961,7 +1963,7 @@ class PetWindow(QWidget):
         elif action == 'happy':
             self.set_state('happy', duration=5.1)
         elif action == 'roll':
-            self.set_state('roll', duration=5.1)
+            self.set_state('roll', duration=2.0)
         elif action == 'dance':
             self.set_state('dance', duration=10.3)
         elif action == 'bark':

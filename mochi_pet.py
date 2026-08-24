@@ -66,8 +66,8 @@ ANIMS = {
     #   frame_ms 一律恢复为 源时长/帧数，动作速度=Agnes生成时的真实动物速度。
     #   walk/run(步态循环+腿装配)、eat(定制碗)、sleep(10s含intro)、lick(双周期定制)为认可版，保持。
     'idle':      ('idle',      101, 50,  True,  0),   # 5.05s = 源5.04s
-    'walk':      ('walk',      32, 83,  True,  0),   # v75: 3原生步态周期64帧stride2=32帧@83ms≈2.66s循环(2周期19帧=用户报重复根因)。纯真实帧
-    'run':       ('run',       15, 54,  True,  0),
+    'walk':      ('walk',      28, 70,  True,  0),   # v86: 移植golden v61认可配方 stride2+wrap旋转=28帧@70ms(fd48.4/seam36.4 ratio0.75, 优于golden认可44.2/0.86)
+    'run':       ('run',       88, 42,  True, 0),   # v100: 青底重做 长循环88原生帧@42ms≈3.7s(旧15@54=1T短循环+2.4:1抽帧=卡/重复感)
     'eat':       ('eat',       34, 96,  True,  0),    # 定制认可版(碗烤入),不升帧
     'bark':      ('bark',      57, 90,  True,  0),    # 5.13s = 源5.04s
     'sleep':     ('sleep',     51, 110, True,  39),   # v50 P3: 同源重生成(完全侧躺四脚摊开) 39 intro+12 loop
@@ -76,7 +76,7 @@ ANIMS = {
     #   8-31单舔毛周期正播+30-9倒播ping-pong(抬回=无缝循环)，duration配套4.0
     'lick':      ('lick',      54, 74,  True,  8),
     'happy':     ('happy',     121, 42, False, 0),  # v56: 24fps原生全帧(原62@82ms=12fps掉帧+模糊)
-    'roll':      ('roll',      121, 42, False, 0),    # v54: puppy管线重生成 24fps原生全帧 5.08s 一次性(站→仰滚→坐)
+    'roll':      ('roll',      47, 42, False, 0),    # v107: 裁纯躺滚段(源44-90)消站→躺"从小变大"，帧数同步47
     'dance':     ('dance',     57, 90,  True,  0),    # 5.13s = 源5.04s
     'stretch':   ('stretch',   117, 43, False, 0),    # 5.03s = 源5.04s
     'beg':       ('beg',       56, 91,  True,  0),    # 5.10s = 源5.04s
@@ -84,7 +84,10 @@ ANIMS = {
     'surprised': ('surprised', 45, 114, False, 0),    # 5.13s = 源5.04s 一次性
     'play_dead': ('play_dead', 68, 75,  False, 0),    # 5.10s = 源5.04s 一次性
     'pet':       ('pet',       107, 42, False, 0),    # v57: 独立摸摸头互动(人手抚摸+小狗享受) 24fps原生 一次性 4.5s
-    'potty_run': ('run',       15, 54,  True,  0),  # 复用run帧，帧数必须与run一致
+    'kiss':      ('kiss',      121, 42, False, 0),    # v100: 亲亲我(坐姿正面朝镜头舔) 24fps原生 一次性 5.08s
+    'wave':      ('wave',      57, 42,  True,  0),    # v100: 挥挥手(坐姿抬爪左右挥) 循环 @42原生速度(v53铁律; 90ms=2.2x慢动作)
+    'type':      ('type',      85, 42,  True, 0),    # v111: type重生成85原生帧长循环@42
+    'potty_run': ('run',       88, 42,  True, 0),  # 复用run帧，帧数必须与run一致
     'potty':     ('sit',       63, 80,  True,  22),   # 复用sit帧(同v53)
 }
 
@@ -586,12 +589,18 @@ class SpriteBank:
     def _on_lazy_done(self, state, t):
         self._lazy_threads.pop(state, None)
         if t.imgs is not None:
-            self.frames[state] = t.imgs
-            self.frames_m[state] = [None] * len(t.imgs)
-            self.lift_map[state] = t.lift
+            # v94-fix race: 懒加载线程构建期间 bank 可能被 fullbank/zoom swap 替换，
+            # 旧代码写回旧bank=新bank永远拿不到全量帧表（roll卡死首帧=动作消失）。
+            # 沿 _replaced_by 链路由到最新bank再写。
+            bank = self
+            while getattr(bank, '_replaced_by', None) is not None:
+                bank = bank._replaced_by
+            bank.frames[state] = t.imgs
+            bank.frames_m[state] = [None] * len(t.imgs)
+            bank.lift_map[state] = t.lift
             # v67: 全量帧表替换首帧快路径后，当前帧索引可能越界（首帧bank长度1），
             # 通知窗口复位动画相位避免 IndexError/卡帧。
-            cb = getattr(self, 'on_state_reloaded', None)
+            cb = getattr(bank, 'on_state_reloaded', None)
             if cb:
                 cb(state)
         t.deleteLater()
@@ -1199,7 +1208,17 @@ class PetWindow(QWidget):
         except (ValueError, AttributeError):
             pass
         if t._seq == getattr(self, '_load_seq', 0) and t.result is not None:
-            self.bank = t.result
+            old = self.bank
+            new = t.result
+            # v94-fix: 迁移已装载懒状态帧表（旧版zoom重建后动作帧丢失=动作消失）
+            for st, fr in old.frames.items():
+                if fr and st in new.LAZY:
+                    new.frames[st] = fr
+                    new.frames_m[st] = old.frames_m.get(st) or [None] * len(fr)
+                    new.lift_map[st] = old.lift_map.get(st) or []
+            new._loaded_order = list(getattr(old, '_loaded_order', []))
+            old._replaced_by = new   # v94-fix: 在途懒加载写回路由到最新bank
+            self.bank = new
             self.bank.on_state_reloaded = self._on_state_reloaded
             self.update()
         t.deleteLater()
@@ -1221,6 +1240,7 @@ class PetWindow(QWidget):
                 new.lift_map[st] = self.bank.lift_map.get(st) or []
         new._loaded_order = list(getattr(self.bank, '_loaded_order', []))
         new.on_state_reloaded = self._on_state_reloaded
+        self.bank._replaced_by = new   # v94-fix: 在途懒加载写回路由到最新bank
         self.bank = new
         self.update()
         t.deleteLater()
@@ -1578,7 +1598,7 @@ class PetWindow(QWidget):
             elif r < 0.76:
                 self.set_state('lick', duration=4.0)
             elif r < 0.84:
-                self.set_state('roll', duration=5.1)
+                self.set_state('roll', duration=2.0)
             elif r < 0.92:
                 self.set_state('dance', duration=10.3)
             else:
@@ -1592,7 +1612,7 @@ class PetWindow(QWidget):
             elif r < 0.74:
                 self.set_state('lick', duration=4.0)
             elif r < 0.84:
-                self.set_state('roll', duration=5.1)
+                self.set_state('roll', duration=2.0)
             else:
                 self.set_state('idle')
 
@@ -1886,7 +1906,7 @@ class PetWindow(QWidget):
     def mouseDoubleClickEvent(self, event):
         trick = random.choice(['happy', 'roll', 'dance', 'bark'])
         # 各绝活时长对齐循环周期整数倍（happy为一次性），避免结束中途硬切
-        self.set_state(trick, duration={'happy': 5.1, 'roll': 5.1,
+        self.set_state(trick, duration={'happy': 5.1, 'roll': 2.0,
                                         'dance': 10.3, 'bark': 5.1}[trick])
         self.happiness = min(100, self.happiness + 6)
 
@@ -1909,6 +1929,9 @@ class PetWindow(QWidget):
         trick_menu.add_item('lick', '舔毛')
         trick_menu.add_item('beg', '作揖')
         trick_menu.add_item('bath', '洗澡')
+        trick_menu.add_item('kiss', '亲亲我')   # v100 新动作
+        trick_menu.add_item('wave', '挥挥手')
+        trick_menu.add_item('type', '敲键盘')
         menu.add_sub('🎪 表演', trick_menu)
         menu.add_sep()
         size_menu = RoundedMenu(self)
@@ -1952,7 +1975,7 @@ class PetWindow(QWidget):
         elif action == 'happy':
             self.set_state('happy', duration=5.1)
         elif action == 'roll':
-            self.set_state('roll', duration=5.1)
+            self.set_state('roll', duration=2.0)
         elif action == 'dance':
             self.set_state('dance', duration=10.3)
         elif action == 'bark':
@@ -1963,6 +1986,12 @@ class PetWindow(QWidget):
             self.set_state('beg', duration=5.1)
         elif action == 'bath':
             self.set_state('bath', duration=10.3)
+        elif action == 'kiss':   # v100 新动作
+            self.set_state('kiss', duration=5.1)
+        elif action == 'wave':
+            self.set_state('wave', duration=5.1)
+        elif action == 'type':
+            self.set_state('type', duration=5.1)
         elif action == 'mode_taskbar':
             self.mode = 'taskbar'
             sg = QApplication.primaryScreen().geometry()
