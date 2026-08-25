@@ -16,7 +16,7 @@ ANIMS = {
     'sleep': 51, 'sit': 63, 'lick': 54, 'happy': 121, 'roll': 47,
     'dance': 57, 'stretch': 117, 'beg': 56, 'bath': 57,
     'surprised': 45, 'play_dead': 68, 'pet': 107,
-    'kiss': 121, 'wave': 57, 'type': 85,  # v111: type重生成85原生帧(眼稳定+交替敲击)
+    'kiss': 121, 'wave': 57, 'type': 49,  # v118: type裁稳定段49帧闭环
 }
 
 do_copy = '--copy' in sys.argv

@@ -14,15 +14,17 @@ from scipy.ndimage import binary_dilation, binary_fill_holes, label as ccl
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(ROOT, 'assets')
-ANIMS = {'idle': 101, 'walk': 19, 'run': 15, 'eat': 34, 'bark': 57,
-         'sleep': 51, 'sit': 63, 'lick': 54, 'happy': 121, 'roll': 121,
+ANIMS = {'idle': 101, 'walk': 28, 'run': 88, 'eat': 34, 'bark': 57,
+         'sleep': 51, 'sit': 63, 'lick': 54, 'happy': 121, 'roll': 47,
          'dance': 57, 'stretch': 117, 'beg': 56, 'bath': 57,
-         'surprised': 45, 'play_dead': 68, 'pet': 107}
+         'surprised': 45, 'play_dead': 68, 'pet': 107,
+         'kiss': 121, 'wave': 57, 'type': 49}  # v118: type裁稳定段49帧闭环(眼稳定+交替敲击)
 STATIC = {'idle', 'sit', 'beg', 'lick'}                    # 相邻突变<6%
 TRANS = {'sleep', 'roll', 'stretch', 'play_dead', 'eat'}   # 姿态大过渡,豁免jitter
 # v72: 周期性姿态律动态豁免（vision 目视确认无缺陷，非抽帧缺陷）：
 #   happy = 趴下玩耍↔站起 律动(adj~50%)；pet = 被摸蹲跳↔站直 律动(adj~22%)
-JUMP_EXEMPT = {'happy', 'pet'}
+#   kiss = 坐姿朝镜头舔 头部前倾律动
+JUMP_EXEMPT = {'happy', 'pet', 'kiss'}
 fails = []
 for st, want in ANIMS.items():
     fs = sorted(glob.glob(os.path.join(ASSETS, st + '_*.png')))

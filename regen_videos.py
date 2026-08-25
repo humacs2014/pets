@@ -188,23 +188,43 @@ ACTIONS = {
                   'standing alert, sniffing air, head turned to camera, looking at viewer'),
     # walk/run: 跑步机/原地全速范式——位置锁定但腿必须大幅完整步态。
     # （旧'in place'措辞会被模型读成压制腿幅=原地踏步。）
-    'walk':      (' ALREADY in a full EXACT SIDE PROFILE VIEW from the VERY FIRST FRAME (no '
+    # v77: walk重生成——v76源视频狗真实横穿画面(质心漂移1648px)且折返，线性去趋势
+    # 救不回(残差648→宽度钳制压死→仅268/560)。根因=模型把"walk"读成空间位移。
+    # 强化位置锁定：显式"原地踏步/跑步机式/身体完全不横移"，neg增加折返/横移/换向。
+    'walk':      (' ALREADY in a full EXACT SIDE PROFILE VIEW from the VERY FIRST FRAME (no '\
                   'front-facing approach, no turning toward the camera at any moment), the muzzle points to '\
-                  'the right, only ONE eye is visible, the tail extends to the left. It walks on '\
-                  'the pure white studio floor, performing a FULL natural trot gait cycle with '\
-                  'large clear strides: diagonal legs alternating, each paw lifting well off the '\
-                  'ground, visible leg extension and fold every step, hind legs moving naturally '\
-                  'and staying close under the body, brisk energetic walk, tail gently swaying, '\
-                  'body holding the same screen position the whole time. The head and back stay '\
-                  'level and horizontal the entire time; the dog stays UPRIGHT on all four '\
-                  'straight legs, chest high, belly well above the floor.',
+                  'the right, only ONE eye is visible, the tail extends to the left. The camera '\
+                  'sees the dog in a PERFECT 90-DEGREE SIDE PROFILE the ENTIRE video: the full length '\
+                  'of the body from chest to tail is visible, the body silhouette looks WIDE and '\
+                  'ELONGATED horizontally (clearly wider than tall), absolutely NO three-quarter '\
+                  'view, NO oblique angle, NO chest or face turning toward the viewer at any '\
+                  'moment. The dog '\
+                  'walks IN PLACE in the EXACT CENTER of the frame, like walking on a treadmill: '\
+                  'ALL the movement is in the legs while the torso and body stay completely '\
+                  'STATIONARY in the middle of the frame, never drifting left or right, never '\
+                  'moving across the frame, never changing position or direction, always facing '\
+                  'the same way to the right the whole time. It performs a FULL natural trot '\
+                  'gait cycle with large clear strides: diagonal legs alternating, each paw '\
+                  'lifting well off the ground, visible leg extension and fold every step, hind '\
+                  'legs moving naturally and staying close under the body, brisk energetic walk, '\
+                  'tail gently swaying. The head and back stay level and horizontal the entire '\
+                  'time; the dog stays UPRIGHT on all four straight legs, chest high, belly well '\
+                  'above the floor. The dog keeps WALKING CONTINUOUSLY without stopping: no '\
+                  'pausing, no standing still, no sitting, no hopping, every single frame of the '\
+                  'video shows active stride motion with legs swinging, from the first frame to '\
+                  'the last frame, an unbroken rhythmic trot.',
                   ', front view, facing camera, standing still, static legs, stiff legs, locked '\
                   'legs, tiny steps, shuffling, legs together, splayed hind legs, twisted legs, '\
-                  'unnatural legs, gray smudge, gray blob, treadmill, belt, black strip, dark '\
+                  'unnatural legs, moving across the frame, drifting right, drifting left, '\
+                  'moving left, moving right, turning back, turning around, changing direction, '\
+                  'walking backward, horizontal drift, position shifting, traveling, gray smudge, '\
+                  'gray blob, treadmill, belt, black strip, dark '\
                   'strip, platform, machine, equipment, prop, object on floor, lying down, lying, '\
                   'prone, crouching, belly on floor, chest on floor, sitting down, head down, '\
                   'head lowered, butt up, rear raised, play bow, bowing, sniffing floor, nose to '\
-                  'floor, head turned to camera, looking at viewer, both eyes visible'),
+                  'floor, head turned to camera, looking at viewer, both eyes visible, stopping, '\
+                  'pause, paused, standing up, standing upright, standing, hop, hopping, jumping, '\
+                  'jump, bouncing, freeze, frozen, idle, resting, waiting'),
     'run':       (' It runs at FULL SPEED in an EXACT SIDE PROFILE VIEW facing right: the muzzle '\
                   'points to the right, only ONE eye is visible, the tail extends to the left. On '\
                   'the pure white studio floor it performs CONTINUOUS large-amplitude gallop '\

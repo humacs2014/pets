@@ -34,6 +34,17 @@ def dilate(m, it=4):
         m = m2
     return m
 
+def save_retry(im, fp, tries=5):
+    import time
+    for t in range(tries):
+        try:
+            im.save(fp)
+            return
+        except OSError:
+            if t == tries - 1:
+                raise
+            time.sleep(0.5 * (t + 1))
+
 states = sys.argv[1:] or STATES
 grand = 0
 # 合法毛发填充源 = 橙毛(饱和>30) 或 真白毛(mx>215且mn>200)，
@@ -51,60 +62,50 @@ for st in states:
         rgb = a[..., :3].astype(np.int16); al = a[..., 3]
         mx = rgb.max(-1); mn = rgb.min(-1)
         trans = al < 60
-        # v74d: 灰影=低饱和(mx-mn<=20, 85<=mx<=205)厚区。连通块>=400px且
-        # 环上不邻深色(黑嘴/黑鼻→自然阴影排除, sit嘴影=0命中)；
-        # 内部灰(腿间被填实)与边界灰边统一处理。正常轮廓抗锯齿细线被erode1滤除。
-        gray = (mx - mn <= 20) & (mx >= 85) & (mx <= 212) & (al > 150)
-        me = erode(gray, 1)
+        # v86: 灰影=中性/弱暖灰 matting 残影+v84乘式残余。门: 不透明+mx<=235(排除白肚mn>=210/mx>=236)+mn<=195(排除白毛AA边)+
+        #   mx-mn<=45(弱彩)+sat<0.22(排除橙毛阴影sat0.3+)。实测: IDLE/SIT/RUN 零命中, WALK 全灰带命中。
+        #   无erode/无black排除(v74d black排除误伤肩部深色毛阴影; sit嘴影本身不在门内)。
+        gray = ((mx - mn) <= 45) & (mx >= 85) & (mx <= 235) & (mn <= 195) & (al > 200) & ((mx - mn) <= 0.22 * mx)
+        me = gray
         if not me.any():
             continue
-        cand = ndimage.binary_dilation(me, iterations=2) & gray
+        cand = me
         dark = mx < 90
-        lab, n = ndimage.label(cand)
-        m = np.zeros_like(cand)
+        # v86 双判据(离线12帧/状态验证): matting灰残影=贴轮廓平滑色块; 合法阴影=体内毛纹暗部。
+        #  A) wf>0.2: CC环8px内纯白(mn>=235)占比=贴轮廓代理(肩带0.37-0.5 vs 肚影0.05-0.11)
+        #  B) std5<1.8: 平滑无毛纹(灰块1.1-1.7 vs 毛纹阴影>=2.0)
+        # 验证: WALK FIX 718/帧 PROT 16; IDLE FIX 0 PROT 3781; SIT FIX 42 PROT 5580; RUN FIX 2641。
+        white = (al > 200) & (mn >= 235)
+        lum = rgb.mean(-1).astype(np.float32)
+        mu = ndimage.uniform_filter(lum, 5)
+        mu2 = ndimage.uniform_filter(lum * lum, 5)
+        std5 = np.sqrt(np.clip(mu2 - mu * mu, 0, None))
+        # v86 strict 中性灰通道(全状态): 源matting烘焙中性灰(idle 696k/sit 583k/walk/bath实测)。
+        # 白肚暖影r-b 30-77、纯白mx>235 结构上不可能触发(r-b<=15 & mx<=235)，零误伤。
+        strict = (((rgb[..., 0] - rgb[..., 2]) <= 15) & ((mx - mn) <= 30) & (mx >= 85) & (mx <= 235) & (al > 200))
+        me = cand | strict
+        lab, n = ndimage.label(me)
+        m = np.zeros_like(gray)
         for i in range(1, n + 1):
             comp = (lab == i)
-            if comp.sum() < 150:   # v74f: 2-3px宽竖条erode后连通域小, 400会漏
+            if comp.sum() < 150:
                 continue
-            ring = dilate(comp, 3) & ~comp
-            if dark[ring].sum() > 0.03 * ring.sum():
-                continue   # 邻黑嘴/黑鼻 = 自然阴影，不修
+            ring = ndimage.binary_dilation(comp, iterations=8) & ~comp & (al > 200)
+            wf = float(white[ring].mean()) if ring.sum() else 0.0
+            sm = float(std5[comp].mean())
+            if not (wf > 0.2 or sm < 1.8):
+                continue   # 体内毛纹阴影=合法，不修
             m |= comp
+        m |= strict   # 中性灰无条件修
         if not m.any():
             continue
-        ys, xs = np.where(m)
-        h, w = m.shape
-        for y, x in zip(ys, xs):
-            fill = None
-            for dy in range(1, MAX_SCAN):
-                yy = y + dy
-                if yy >= h: break
-                if not m[yy, x] and good_fur(a[yy, x]):
-                    fill = a[yy, x, :3]; break
-            if fill is None:
-                for dy in range(1, MAX_SCAN):
-                    yy = y - dy
-                    if yy < 0: break
-                    if not m[yy, x] and good_fur(a[yy, x]):
-                        fill = a[yy, x, :3]; break
-            if fill is None:
-                for dx in range(1, MAX_SCAN):   # 横向: 水平灰带(腿间/胸前竖条)
-                    xx = x + dx
-                    if xx >= w: break
-                    if not m[y, xx] and good_fur(a[y, xx]):
-                        fill = a[y, xx, :3]; break
-            if fill is None:
-                for dx in range(1, MAX_SCAN):
-                    xx = x - dx
-                    if xx < 0: break
-                    if not m[y, xx] and good_fur(a[y, xx]):
-                        fill = a[y, xx, :3]; break
-            if fill is None:
-                a[y, x, 3] = 0   # 无合法毛源=纯垃圾边，透明收缩比硬填色自然
-                continue
-            a[y, x, :3] = fill
-            a[y, x, 3] = 255
-        Image.fromarray(a).save(f)
+        # v86 向量化毛源填充: 每像素取最近合法毛色(等价原4向扫描, O(N))
+        good = (al > 200) & ~m & ((mx - mn > 30) | ((mx > 215) & (mn > 200)))
+        dist, (iy, ix) = ndimage.distance_transform_edt(~good, return_indices=True)
+        a[m, 0] = rgb[iy, ix][m, 0]; a[m, 1] = rgb[iy, ix][m, 1]; a[m, 2] = rgb[iy, ix][m, 2]
+        a[m, 3] = 255
+        a[m & (dist > 200), 3] = 0   # 无合法毛源=垃圾边透明收缩
+        save_retry(Image.fromarray(a.astype(np.uint8)), f)
         st_tot += int(m.sum()); nf += 1
     grand += st_tot
     print(st, 'frames=', nf, 'px=', st_tot)

@@ -8,6 +8,7 @@
 """
 import os, sys, glob, subprocess
 import numpy as np
+import cv2
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -23,9 +24,10 @@ GROUND = 956                   # walk/run 脚底线（canvas 1024 内，=478/512
 SLEEP_SIT_H, SLEEP_LIE_H = 600.0, 408.0   # v2: ×2 同步1024画布
 
 # ping-pong 往复类（正播+倒播）
-PINGPONG = {'idle', 'eat', 'bark', 'sit', 'roll', 'dance', 'beg', 'bath'}
+PINGPONG = {'idle', 'eat', 'bark', 'sit', 'dance', 'beg', 'bath'}
 # 一次性/过渡类
-ONESHOT = {'sleep', 'stretch', 'happy', 'surprised', 'play_dead', 'pet'}
+ONESHOT = {'sleep', 'stretch', 'happy', 'surprised', 'play_dead', 'pet', 'kiss'}  # v100: kiss一次性全帧
+# v100: 3新动作（亲亲/挥手/敲键盘），参考图质量路线=高对比青底源
 # 高度锚定 target_h 按姿态档（跨档=忽大忽小）。新宠物标定法：先跑 idle 测站立 h≈274，
 # 坐姿视频取稳坐段测 h≈316，伸展段≈291，躺卧段≈204-217。
 # v2: 1024画布，精确=旧512资产实测中位h×2（保持屏幕占比不变，防状态切换忽大忽小）
@@ -33,25 +35,30 @@ TARGET_H = {
     'idle': 546, 'bark': 546, 'happy': 544, 'dance': 544,
     'beg': 540, 'bath': 542, 'sit': 630,
     'stretch': 580,
-    'walk': 508, 'run': 542,          # 步态侧身档（旧254/271×2，勿统一548=切换跳变8%）
+    'walk': 560, 'run': 542,          # v76: walk 508→560 对齐idle档(546)——用户报walk明显小于其他状态(实测屏上85px vs idle 135px); run保持
     'lick': 542, 'surprised': 544,
     'eat': 474,
     'pet': 546,   # 摸摸头: 站姿档(视频为四腿站立3/4视), 与idle/bark同档防忽大忽小
-    'roll': 358, 'play_dead': 344,    # 躺卧档（旧179/172×2）
+    'roll': 630, 'play_dead': 344,    # v76: roll躺卧档358→500; v101: 500→630对齐青底新管线主体档(用户报roll比主体小)
+    'kiss': 630, 'wave': 630, 'type': 640,  # v100: kiss/wave坐姿档=sit 630; type含键盘整体bbox 640
 }
 # 重采样到引擎 ANIMS 声明帧数（引擎按 count 加载，帧数必须 1:1）
 RT_FRAMES = {
-    'idle': 101, 'eat': 34, 'bark': 57, 'sit': 63, 'roll': 121,
+    'idle': 101, 'eat': 34, 'bark': 57, 'sit': 63, 'roll': 47,
     'dance': 57, 'beg': 56, 'bath': 57, 'stretch': 117,
     'surprised': 45, 'play_dead': 68, 'sleep': 51, 'lick': 54,
-    'happy': 121, 'run': 15, 'pet': 107,  # v60: walk移出RT_FRAMES——双周期=2T+1原生帧恒等, 帧数随T自适应, 禁止重采样(会产生重复帧)
+    'happy': 121, 'pet': 107,  # v60: walk移出RT_FRAMES——双周期=2T+1原生帧恒等, 帧数随T自适应, 禁止重采样(会产生重复帧)
+    # v100: run移出RT_FRAMES——36原生帧resample 15=2.4:1抽帧+1T=0.81s短循环=用户报"卡/重复感"，改长循环原生帧
+    'kiss': 121, 'wave': 57, 'type': 49,  # v118: type裁稳定段49帧闭环(extract走find_loop_pair不resample)
     # pet=107(golden认可值): ONESHOT态必须锁帧数保三处ANIMS一致; 源clean窗口≥107帧为轻微抽帧, <107帧为重复帧(一次性动作无感知)
 }
 ALL_STATES = ['idle', 'sit', 'eat', 'bark', 'happy', 'roll', 'dance',
               'beg', 'bath', 'lick', 'surprised', 'play_dead', 'sleep', 'stretch',
-              'walk', 'run', 'pet']
-# 姿态选窗（idle/bark 选纯侧身段跳3/4正面intro；sit 选稳坐段跳站姿intro；eat 选侧身段）
-PROFILE_STATES = {'idle': 'high', 'bark': 'high', 'sit': 'low', 'eat': 'high'}
+              'walk', 'run', 'pet', 'kiss', 'wave', 'type']
+# 姿态选窗（bark 选纯侧身段跳3/4正面intro；sit 选稳坐段跳站姿intro；eat 选侧身段）
+# v76: idle 移出——新idle视频设计为FRONT VIEW正面朝向(用户要求开屏正面迎向用户)，
+# 旧high选窗会把正面段当intro跳过=正面修复失效。
+PROFILE_STATES = {'bark': 'high', 'sit': 'low', 'eat': 'high'}
 # ══════════ CONFIG END ══════════
 
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -78,8 +85,105 @@ def extract(name):
                         os.path.join(fd, 'f_%04d.png')], check=True)
     return sorted(glob.glob(os.path.join(fd, 'f_*.png')))
 
+def chroma_cutout_frame(fp):
+    """v102/v103: type专用色距抠图。isnet显著性模型把奶白键盘当背景删除(用户报键盘消失)。
+    v103取证: 地平线模糊横带=低饱和青(H≈43,S≈11)与狗/键盘连通→灰带伪影;
+    键盘暖白(H≈28,S≈32)/狗(H≈16,S≈58)。
+    算法: ①RGB色距去青底(四角采样) ②HSV低饱和青横带mask(H∈[33,70]&S<22)置透明
+    ③CC清理(全宽h<30细条=键盘阴影线/小碎片删除)。"""
+    im = Image.open(fp).convert('RGB')
+    arr = np.array(im).astype(np.float32)
+    H, W = arr.shape[:2]
+    m = 20
+    corners = np.concatenate([arr[:m, :m].reshape(-1, 3), arr[:m, -m:].reshape(-1, 3),
+                              arr[-m:, :m].reshape(-1, 3), arr[-m:, -m:].reshape(-1, 3)])
+    bg = corners.mean(axis=0)
+    d = np.linalg.norm(arr - bg, axis=-1)
+    alpha = np.clip((d - 45) / 45, 0, 1)
+    # v103: 低饱和青横带(背景虚化带)置透明——暖白键盘/狗不受影响(H<33或S>30)
+    hsv = cv2.cvtColor(np.array(im)[:, :, ::-1], cv2.COLOR_BGR2HSV)
+    band = (hsv[..., 0] >= 33) & (hsv[..., 0] <= 70) & (hsv[..., 1] < 22)
+    alpha[band] = 0
+    # v105: 青色色相硬删——背景亮渐变带(H≈94/S≈133)比四角亮逃出色距, 色相法根治;
+    # 狗H<30/奶白键盘H<40/黑色S<40 全安全
+    cyan = (hsv[..., 0] >= 75) & (hsv[..., 0] <= 115) & (hsv[..., 1] > 90) & (hsv[..., 2] > 120)
+    alpha[cyan] = 0
+    # v104: 键盘下暗阴影条(S<30&V<160, 奶白键盘V>200/狗S>40均安全)置透明
+    # v117: 限底部50行——真键盘含深色键帽(S<30&V<160全中), 全图删=键帽变洞
+    yy = np.arange(H)[:, None] * np.ones((1, W))
+    shadow = (hsv[..., 1] < 30) & (hsv[..., 2] < 160) & (yy > H - 50)
+    alpha[shadow] = 0
+    # v107: 冷调残留硬删——底带/左右缘背景残丝(B-R>6冷调: RGB≈[169,195,196]等);
+    # 取证: 狗白毛B-R≈-30/键帽B-R≈-33全暖调安全, 黑色字B-R≈0不触发。
+    cold = (arr[..., 2] - arr[..., 0]) > 6
+    alpha[cold] = 0
+    alpha = (alpha * 255).astype(np.uint8)
+    # CC清理: 全宽细条(h<30, w>0.6W)=键盘下阴影线; 小碎片<2000px
+    from scipy.ndimage import label
+    lab, n = label(alpha > 128)
+    if n > 1:
+        sizes = np.bincount(lab.ravel()); sizes[0] = 0
+        for cc in range(1, n + 1):
+            if sizes[cc] == 0:
+                continue
+            ys, xs = np.where(lab == cc)
+            h, w = ys.max() - ys.min() + 1, xs.max() - xs.min() + 1
+            if (h < 30 and w > 0.6 * W) or sizes[cc] < 2000:
+                alpha[lab == cc] = 0
+    # v104: 二值化——半透明渐变残余(1-127)在深色底显灰横带, 必须硬切
+    alpha = ((alpha > 128) * 255).astype(np.uint8)
+    # v105: 底缘垂线清除——键盘主体底缘(row fg>300)以下连体残丝整行删
+    rows = (alpha > 0).sum(axis=1)
+    body_rows = np.where(rows > 300)[0]
+    if len(body_rows):
+        alpha[body_rows.max() + 1:, :] = 0
+    # v119: 轮廓内洞修复——chroma误删两类像素(白桌=发白发亮+逐帧闪):
+    # ①高光(眼/颊/键帽顶)带环境青色调中band/cold规则→洞; ②键帽间隙透青底→洞。
+    # 修法: 主CC轮廓fill_holes得洞; 内容洞=回贴raw原色(恢复高光),
+    # 键盘带(y>600)青色洞=填奶白基色(参考图为实心键盘)。洞限≤3000px防填腋窝真透空。
+    from scipy.ndimage import binary_fill_holes
+    lab2, n2 = label(alpha > 128)
+    if n2 >= 1:
+        sz2 = np.bincount(lab2.ravel()); sz2[0] = 0
+        main = lab2 == int(np.argmax(sz2))
+        holes = binary_fill_holes(main) & (alpha <= 128)
+        hl, hn = label(holes)
+        hsz = np.bincount(hl.ravel()); hsz[0] = 0
+        cream = np.array([233, 216, 190], dtype=np.float32)
+        hsvf = cv2.cvtColor(arr.astype(np.uint8)[:, :, ::-1], cv2.COLOR_BGR2HSV)
+        for c in range(1, hn + 1):
+            if hsz[c] == 0 or hsz[c] > 3000:
+                continue
+            msk = hl == c
+            ys, xs = np.where(msk)
+            yc = ys.mean()
+            # 白度分类(源坐标1088x832): 高光洞=白回贴原色; 键帽带(y620-750)洞填奶白;
+            # 键帽间隙hole为封闭洞(爪间透空是notch不在此), 按y带填安全
+            Vm = hsvf[msk, 2].mean(); Sm = hsvf[msk, 1].mean() / 255.0
+            if Vm >= 240 and Sm <= 0.12:
+                alpha[msk] = 255              # 眼/颊/键帽高光回贴raw原色
+            elif 620 <= yc <= 750:
+                arr[msk] = cream              # 键帽间隙透青底→奶白实心
+                alpha[msk] = 255
+            # 其余(底缘残影/脸部非白洞)保持透明
+    # v119b: 键盘带notch直填——穿透性间隙(键帽间/左端整帽缺失)与外背景连通,
+    # fill_holes检测不到; 按键盘水平范围(y615-786)内透明像素直接填奶白
+    # (含爪间透空=键盘面露出, 更贴近参考图实心键盘)
+    creamm = (arr[..., 0] > 215) & (arr[..., 1] > 190) & (arr[..., 2] > 150) & (arr[..., 2] < 225) & (alpha > 128)
+    cols = np.where(creamm[694:774].sum(0) > 3)[0]
+    if len(cols):
+        x0, x1 = max(0, cols.min() - 8), min(arr.shape[1], cols.max() + 8)
+        zone = np.zeros(alpha.shape, bool)
+        zone[612:778, x0:x1] = True
+        fillme = zone & (alpha == 0)
+        arr[fillme] = cream
+        alpha[fillme] = 255
+    out = np.dstack([arr, alpha.astype(np.float32)]).astype(np.uint8)
+    return Image.fromarray(out, 'RGBA')
+
 def cutout_frames(fps, state):
-    """isnet-general-use 抠图（白底/白毛必须用此模型；u2net 液化白色头部）。"""
+    """isnet-general-use 抠图（白底/白毛必须用此模型；u2net 液化白色头部）。
+    type例外: isnet把键盘当背景删 → chroma色距保键盘。"""
     mats_dir = os.path.join(ROOT, '_mats_' + state)
     mp4 = os.path.join(VIDS_DIR, state + '.mp4')
     # 新鲜度铁律: 视频比抠图缓存新 → 旧mask作废
@@ -90,8 +194,29 @@ def cutout_frames(fps, state):
         print(f'  [cache invalid] _mats_{state} older than video, re-cutting', flush=True)
     os.makedirs(mats_dir, exist_ok=True)
     existing = sorted(glob.glob(os.path.join(mats_dir, 'm_*.png')))
+    if state == 'type':
+        # v102: 色距抠图保键盘; 旧isnet缓存必须强制重切
+        marker = os.path.join(mats_dir, '_chroma_v119')
+        if existing and not os.path.exists(marker):
+            import shutil
+            shutil.rmtree(mats_dir)
+            os.makedirs(mats_dir, exist_ok=True)
+            existing = []
+            print('  [cache invalid] type isnet mats → chroma re-cut', flush=True)
+        open(marker, 'w').close()
     if len(existing) >= len(fps):
         return existing
+    if state == 'type':
+        mats = []
+        for i, fp in enumerate(fps):
+            outp = os.path.join(mats_dir, f'm_{i:04d}.png')
+            if os.path.exists(outp):
+                mats.append(outp); continue
+            chroma_cutout_frame(fp).save(outp)
+            mats.append(outp)
+            if i % 20 == 0:
+                print(f'    mat {i}/{len(fps)}', flush=True)
+        return mats
     sess = new_session('isnet-general-use')
     mats = []
     for i, fp in enumerate(fps):
@@ -302,10 +427,16 @@ def clean_window(mats, bottom_ok=True, relax=False, extra_ok=None):
                 s, l = i + 1, 0
     return best_s, best_s + best_l, sum(ok), len(ok)
 
-def treadmill_mats(mat_paths, state, smooth=2):
+def treadmill_mats(mat_paths, state, smooth=2, mode='linear', win=25):
     """walk/run 线性去趋势对齐（mats阶段, normalize之前）:
     walk源视频狗真实横穿画面(-667px漂移)→normalize的union-bbox横跨整个行走距离
     →宽度钳制压死scale→walk h=169px仅idle的31%。必须逐帧位移收缩union-bbox。
+
+    mode='linear'(walk/run): 一次拟合质心趋势→每帧只对齐趋势分量(去除净漂移)。
+    mode='median'(roll, v76): 狗滚动时左右非线性徘徊(质心p2p=784px)，线性拟合残差
+    仍647px→宽度钳制0.825→roll仅473/500。中值滤波W=25分离趋势(徘徊)与残差(滚动
+    摆动)，残差90px→union_w=656→scale不受宽度钳制→精确恢复500。窗宽25≈半个滚动
+    周期，滚动摆动在窗内均值≈0被滤出趋势；残留90px=自然滚动摆动保留在精灵内。
 
     ⚠️v59根因修复（滑行）：v58实现把每帧质心对齐到5帧平滑中位数——平滑信号保留
     ~93%的步态周期振荡，对齐时把步态振荡一并删除(run部署帧体内摆动仅9px@1024，
@@ -330,19 +461,31 @@ def treadmill_mats(mat_paths, state, smooth=2):
     valid_idx = [i for i, c in enumerate(cxs) if c >= 0]
     if len(valid_idx) < 4:
         return mat_paths
-    # 线性趋势拟合(去漂移), 残差=纯步态振荡→保留
+    # 趋势拟合(去漂移), 残差=纯振荡→保留
     vi = np.array(valid_idx, float)
     vc = np.array([cxs[i] for i in valid_idx])
-    k = np.polyfit(vi, vc, 1)
-    trend = np.polyval(k, vi)
-    anchor = float(np.median(trend))
-    dxs = []
-    for i in range(len(cxs)):
-        if cxs[i] < 0:
-            dxs.append(0); continue
-        tr = float(np.polyval(k, i))
-        dxs.append(int(round(anchor - tr)))
-    print(f'  treadmill: drift={k[0]:.2f}px/f removed, oscillation preserved', flush=True)
+    if mode == 'median':
+        from scipy.ndimage import median_filter
+        trend_full = median_filter(vc, size=win, mode='nearest')
+        anchor = float(np.median(trend_full))
+        dxs = []
+        for i in range(len(cxs)):
+            if cxs[i] < 0:
+                dxs.append(0); continue
+            tr = float(trend_full[valid_idx.index(i)])
+            dxs.append(int(round(anchor - tr)))
+        print(f'  treadmill(median W={win}): wander removed, roll sway preserved', flush=True)
+    else:
+        k = np.polyfit(vi, vc, 1)
+        trend = np.polyval(k, vi)
+        anchor = float(np.median(trend))
+        dxs = []
+        for i in range(len(cxs)):
+            if cxs[i] < 0:
+                dxs.append(0); continue
+            tr = float(np.polyval(k, i))
+            dxs.append(int(round(anchor - tr)))
+        print(f'  treadmill: drift={k[0]:.2f}px/f removed, oscillation preserved', flush=True)
     maxabs = max(abs(d) for d in dxs) if dxs else 0
     moved = 0
     out = []
@@ -398,6 +541,74 @@ def normalize_frames(mat_paths, target_h=None):
         canvas.paste(c, ((CANVAS - tw) // 2, bottom - th), c.split()[3])
         frames.append(canvas)
     return frames
+
+def warm_balance_frames(frames, target_rgb=(205.0, 190.0, 175.0)):
+    """v107: roll发青修复(用户报颜色发青)。取证: roll白毛区H偏蓝绿(S≈8-10)而
+    idle认可白胸RGB(205,190,175)暖白。方法: 每帧取白毛像素(S<30&V>140&α>200)中值
+    为白点, 全窗白点中值→增益=target/white(逐通道clip 0.85-1.20), 全帧统一增益
+    (窗中值基准=无帧间闪烁)。"""
+    wps = []
+    datas = []
+    for f in frames:
+        a = np.array(f)
+        rgb = a[:, :, :3].astype(float)
+        hsv = cv2.cvtColor(a[:, :, :3], cv2.COLOR_RGB2HSV).astype(int)
+        m = (a[:, :, 3] > 200) & (hsv[:, :, 1] < 30) & (hsv[:, :, 2] > 140)
+        datas.append(a)
+        if m.sum() > 100:
+            wps.append(np.median(rgb[m], axis=0))
+    if not wps:
+        return frames
+    white = np.median(np.array(wps), axis=0)
+    gain = np.clip(np.array(target_rgb) / np.maximum(white, 1), 0.85, 1.20)
+    print(f'  warm_balance: white={white.round(0)} gain={gain.round(3)}', flush=True)
+    out = []
+    for a in datas:
+        b = a.copy()
+        b[:, :, :3] = np.clip(b[:, :, :3].astype(float) * gain, 0, 255).astype(np.uint8)
+        out.append(Image.fromarray(b, 'RGBA'))
+    return out
+
+def roll_perframe_scale(frames, stand_h=548, lie_h=450):
+    """v101: roll站/躺姿态差巨大(union归一后站帧h=826=2×idle主体412, 用户报大小出入)。
+    逐帧锚定(同sleep_scale_frames思路): 源h>=0.80*hmax→站档stand_h(≈idle档412-474);
+    h<=0.55*hmax→躺档lie_h; 中间线性过渡, 底部GROUND锚定+宽度钳制。
+    v107: stand_h 450→548对齐idle认可站高(用户报"从小变大"根因=站帧偏小);
+    lie_h 420→450(躺姿面积与站姿视觉体量匹配)。"""
+    hs, ws = [], []
+    for f in frames:
+        a = np.array(f)[:, :, 3]
+        yy, xx = np.where(a > 40)
+        if len(xx) == 0:
+            hs.append(0); ws.append(0); continue
+        hs.append(yy.max() - yy.min() + 1); ws.append(xx.max() - xx.min() + 1)
+    hs = np.array(hs, float); ws = np.array(ws, float)
+    hmax = hs.max()
+    out = []
+    for i, f in enumerate(frames):
+        h = hs[i]
+        if h <= 0:
+            out.append(f); continue
+        if h >= 0.80 * hmax:
+            th = stand_h
+        elif h <= 0.55 * hmax:
+            th = lie_h
+        else:
+            t = (h - 0.55 * hmax) / (0.25 * hmax)
+            th = lie_h + t * (stand_h - lie_h)
+        s = th / h
+        if ws[i] * s > 0.918 * CANVAS:
+            s = 0.918 * CANVAS / ws[i]
+        tw, tth = max(1, int(round(ws[i] * s))), max(1, int(round(h * s)))
+        a = np.array(f)[:, :, 3]
+        yy, xx = np.where(a > 40)
+        y0, x0 = yy.min(), xx.min()
+        crop = f.crop((x0, y0, x0 + int(ws[i]), y0 + int(h)))
+        crop = crop.resize((tw, tth), Image.LANCZOS)
+        canvas = Image.new('RGBA', (CANVAS, CANVAS), (0, 0, 0, 0))
+        canvas.paste(crop, ((CANVAS - tw) // 2, GROUND - tth), crop.split()[3])
+        out.append(canvas)
+    return out
 
 def sleep_scale_frames(frames):
     """sleep 逐帧姿态缩放（含连续姿态过渡的状态必须逐帧锚定，不能用单基准整体缩放）:
@@ -638,14 +849,16 @@ def stabilize_h(frames):
         out.append(Image.fromarray(arr))
     return out
 
-def _gait_profile(mats, min_len=40, leg_span_check=True, ar_lo=1.15, ar_hi=1.55):
+def _gait_profile(mats, min_len=40, leg_span_check=True, ar_lo=1.15, ar_hi=1.55, gap_tol=0):
     """walk/run 姿态选窗: 侧身档 ar∈[ar_lo,ar_hi](>1.55=趴卧段) + 腿质量span<0.9,
     取最长连续段(min_len)。gait_window 只按运动量选, 会选中正面intro(头动大)或趴卧段——
     golden walk 实测: intro ar 0.9-1.17 被 gait_window 选中→assets 全正面。
     ⚠️run 必须 leg_span_check=False: 奔跑四腿全伸展时 rowband 覆盖全宽 span≈1.0,
     span<0.9 会误杀全部侧身帧(run 实测仅选中20帧1周期→插值模糊+重复感)。
     柴犬等短腿品种侧身ar偏低(1.0-1.24)且span无判别间隙(0.75-0.97 vs 正面0.83-0.97)→
-    walk 用 ar_lo=0.98 + leg_span_check=False (正面intro ar<=0.93 仍有间隙)。"""
+    walk 用 ar_lo=0.98 + leg_span_check=False (正面intro ar<=0.93 仍有间隙)。
+    v85: ar_hi 1.55→1.85(walk大跨步伸展帧ar>1.55被误杀→侧视窗27帧→单周期14帧循环=重复感);
+    gap_tol: 侧视窗允许≤gap_tol帧的ar下探(步态振荡收拢相位), 桥接成长窗=3周期长循环。"""
     ok = []
     for p in mats:
         a = np.array(Image.open(p).convert('RGBA'))[:, :, 3]
@@ -671,6 +884,21 @@ def _gait_profile(mats, min_len=40, leg_span_check=True, ar_lo=1.15, ar_hi=1.55)
         spans.append((s, len(cols) - 1))
         span = (cols[spans[-1][1]] - cols[spans[0][0]] + 1) / w
         ok.append(span < 0.9)
+    if gap_tol > 0:
+        # v85: 桥接≤gap_tol帧的ar下探段(步态收拢相位), 合并成长侧视窗
+        ok = list(ok)
+        i = 0
+        while i < len(ok):
+            if not ok[i]:
+                j = i
+                while j < len(ok) and not ok[j]:
+                    j += 1
+                if j - i <= gap_tol and i > 0 and j < len(ok):
+                    for k in range(i, j):
+                        ok[k] = True
+                i = j
+            else:
+                i += 1
     best_l, best_s, s, l = 0, 0, 0, 0
     for i, o in enumerate(ok):
         if o:
@@ -697,6 +925,37 @@ def gait_crossfade(seq, K=6):
         cur = np.array(seq[idx]).astype(np.float32)
         out[idx] = Image.fromarray(
             np.clip((1 - w) * cur + w * A0, 0, 255).astype(np.uint8))
+    return out
+
+
+def walk_width_norm(seq, target_area=189747):
+    """v85 尺寸统一: v84大跨步trot成品面积中位231k vs 认可基线walk=189,747(+22%),
+    而idle134k/run191k/sit174k均与各自基线一致 → 用户报"各动作大小不统一"唯walk超标。
+    按bbox面积中位数等比缩放(宽高同比例,腿不变形), GROUND底部锚定。仅walk应用。"""
+    areas = []
+    for f in seq:
+        a = np.array(f)[:, :, 3]
+        areas.append(int((a > 40).sum()))   # v85: 像素面积(非bbox), 与基线度量一致
+    if not areas:
+        return seq
+    med_a = float(np.median(areas))
+    s = (target_area / med_a) ** 0.5
+    if abs(s - 1.0) < 0.02:
+        return seq
+    out = []
+    for f in seq:
+        a = np.array(f)[:, :, 3]
+        ys, xs = np.where(a > 40)
+        if len(xs) == 0:
+            out.append(f); continue
+        y0, x0, y1, x1 = ys.min(), xs.min(), ys.max(), xs.max()
+        c = f.crop((x0, y0, x1 + 1, y1 + 1))
+        tw, th = max(1, int(round(c.width * s))), max(1, int(round(c.height * s)))
+        c = c.resize((tw, th), Image.LANCZOS)
+        canvas = Image.new('RGBA', f.size, (0, 0, 0, 0))
+        canvas.paste(c, ((CANVAS - tw) // 2, GROUND - th), c.split()[3])
+        out.append(canvas)
+    print(f'  walk_size_norm: med_area={med_a:.0f}→{target_area} (s={s:.3f})', flush=True)
     return out
 
 
@@ -779,11 +1038,28 @@ def find_gait_loop(frames, min_span=8, max_span_frac=0.6):
     print(f'  gait loop: period T={T} start={i0} score={scores[T]:.1f}', flush=True)
     return i0, i0 + T
 
+def drop_whitebg(fps):
+    """v101: I2V首帧=白底身份图(roll/type_v100目检确认)——四角全白=白底帧剔除,
+    否则运行时有1帧白底站立闪现。仅对青底新管线状态调用。"""
+    out = []
+    for fp in fps:
+        im = Image.open(fp).convert('RGB')
+        w, h = im.size
+        px = [im.getpixel((2, 2)), im.getpixel((w - 3, 2)),
+              im.getpixel((2, h - 3)), im.getpixel((w - 3, h - 3))]
+        if all(min(p) > 225 for p in px):
+            print(f'  [drop whitebg] {os.path.basename(fp)}', flush=True)
+            continue
+        out.append(fp)
+    return out
+
 def process_state(name):
     print(f'== {name} ==', flush=True)
     fps = extract(name)
     if not fps:
         print(f'  SKIP: no mp4', flush=True); return
+    if name in ('roll', 'type'):
+        fps = drop_whitebg(fps)
     mats = cutout_frames(fps, name)
     if name in ('sleep', 'stretch'):
         # 过渡视频不做面积过滤（躺/站面积差异大），取全部非边缘帧；
@@ -812,8 +1088,55 @@ def process_state(name):
         print(f'  transition: kept {len(sel)}/{len(mats)}', flush=True)
     else:
         if name in ('walk', 'run'):
+            if name == 'walk':
+                # v78: 新walk视频前段=正面intro(ar<0.90)，gait profile窗阈值0.98凑不够40帧
+                # 会回退全段[motion-selected]=正面intro混入循环=loop起点跳变。
+                # 头部连续正面帧裁除（遇侧视即停），尾部3/4收势不裁（gait seam自选）。
+                # v81: AR阈值自适应——0.90/0.98是按旧视频侧视ar≈0.99标定的;
+                # 新视频侧视ar仅0.70-0.89(幼犬tail-up紧凑体型)→旧阈值会裁掉整段。
+                # 自适应: 全视频ar排序取上2/3分位段的p10减0.05作侧视下界,
+                # 下夹0.60防异常。front-trim需连续3帧达标才停(防单帧尖峰早停)。
+                _ars = []
+                for m in mats:
+                    a = np.array(Image.open(m).convert('RGBA'))[:, :, 3]
+                    ys, xs = np.where(a > 30)
+                    if len(xs):
+                        _ars.append((xs.max() - xs.min() + 1) / (ys.max() - ys.min() + 1))
+                if len(_ars) > 30:
+                    _side = sorted(_ars)[int(len(_ars) * 2 / 3):]
+                    # v82: 下限1.00(真侧视剪影AR>=1.05; 0.60下限曾放过斜侧视频=
+                    # 用户报"斜侧身体不像走动")。视频无真侧视段时宁可回退短窗/重跑。
+                    WALK_AR = max(1.00, float(np.quantile(_side, 0.10)) - 0.05)
+                else:
+                    WALK_AR = 1.05
+                print(f'  v81 adaptive walk AR={WALK_AR:.2f} (side p10 of top-2/3)', flush=True)
+
+                def _ar_of(p):
+                    a = np.array(Image.open(p).convert('RGBA'))[:, :, 3]
+                    ys, xs = np.where(a > 30)
+                    if len(xs) == 0:
+                        return 0.0
+                    return (xs.max() - xs.min() + 1) / (ys.max() - ys.min() + 1)
+
+                _s = 0
+                while _s < len(mats) - 24:
+                    if all(_ar_of(mats[_s + k]) >= WALK_AR for k in range(3)):
+                        break
+                    _s += 1
+                if _s > 0:
+                    mats = mats[_s:]
+                    print(f'  v78 walk front-trim: dropped {_s} front-facing intro frames', flush=True)
+            _walk_lo = min(WALK_AR, 1.25) if name == 'walk' else 1.15  # v100: run分支WALK_AR未定义(UnboundLocalError)，else为死代码取默认1.15
+            # v85: walk侧窗下界 min(adaptive,1.25)。自适应1.39误杀步态振荡收拢相位帧
+            # (ar 1.26-1.38全是侧身)→最长段22<40→fallback motion窗27帧=14帧单周期循环=重复感。
+            # 正面intro实测上限1.24, 1.25安全保留front-trim成果。
             pw = _gait_profile(mats, leg_span_check=False,
-                               ar_lo=0.98 if name == 'walk' else 1.15)
+                               ar_lo=_walk_lo if name == 'walk' else 0.98,
+                               ar_hi=1.85 if name == 'walk' else 1.55,
+                               gap_tol=2 if name == 'walk' else 0) if name == 'walk' else \
+                 _gait_profile(mats, leg_span_check=False, ar_lo=1.15, ar_hi=1.85, gap_tol=2)
+            # v100: run移植v85 walk修复——默认ar_hi=1.55误杀奔跑伸展帧(实测ar 1.55-1.73)，
+            # profile窗30<40→fallback motion窗12帧=单周期插值模糊+重复感；1.85+gap2→全段119帧。
             if pw:
                 s, e = pw
                 print(f'  gait profile window [{s}:{e}] len={e-s} (side-facing selected)', flush=True)
@@ -839,18 +1162,63 @@ def process_state(name):
                     s, e, _, _ = clean_window(mats)
                     print(f'  gait window fallback [{s}:{e}]', flush=True)
         else:
-            s, e, nclean, ntot = clean_window(
-                mats, bottom_ok=(name != 'beg'),   # beg 直立抬爪: 底触=脚出框裁切
-                relax=(name == 'pet'),             # pet: 手臂伸出屏幕=有意设计
-                extra_ok=([t and g for t, g in zip(tub_ok_flags(mats), gray_ok_flags(mats))]
-                          if name == 'bath' else None))
-            print(f'  clean window [{s}:{e}] len={e-s} ({nclean}/{ntot} ok)', flush=True)
+            if name in ('type', 'kiss'):
+                # v102: chroma保键盘后键盘触左右边=有意构图(宽键盘出屏), clean_window的
+                # edge判据全拒(0/119)。全视频即敲键动作, 全窗; 白底帧已由drop_whitebg剔除。
+                # v102 kiss: 走近+凑近舔镜头=主体必然触边, clean_window只选中段10帧坐姿段
+                # (丢走近/舔镜头), 同type全窗。
+                s, e = 0, len(mats)
+                print(f'  {name} full-window (chroma: edge-touch by design) {e - s} frames', flush=True)
+            else:
+                s, e, nclean, ntot = clean_window(
+                    mats, bottom_ok=(name != 'beg'),   # beg 直立抬爪: 底触=脚出框裁切
+                    relax=(name == 'pet'),             # pet: 手臂伸出屏幕=有意设计
+                    extra_ok=([t and g for t, g in zip(tub_ok_flags(mats), gray_ok_flags(mats))]\
+                              if name == 'bath' else None))
+                print(f'  clean window [{s}:{e}] len={e-s} ({nclean}/{ntot} ok)', flush=True)
             if name in PROFILE_STATES:
                 pw = posture_window(mats[s:e], mode=PROFILE_STATES[name])
                 if pw:
                     s2, e2 = pw
                     print(f'  profile window [{s + s2}:{s + e2}] len={e2 - s2} (side-facing selected)', flush=True)
                     s, e = s + s2, s + e2
+            if name == 'dance':
+                # v80: 双腿直立门。根因: 源首尾正面四足段混入loop=用户报"6条腿"。
+                # 判别取证: 脚底20行带跨度/狗宽 gfrac——直立双后腿=0.14-0.19,
+                # 正面四足着地=0.47-0.71(前爪后爪底部分开)。6行脚带cluster在正面
+                # 站姿粘连成单cluster不可分, 弃用。gate: ar<1.15 且 gfrac<=0.35。
+                ups = []
+                for m in mats[s:e]:
+                    a = np.array(Image.open(m).convert('RGBA'))[:, :, 3]
+                    ys2, xs2 = np.where(a > 30)
+                    if len(xs2) < 100:
+                        ups.append(False); continue
+                    h2 = ys2.max() - ys2.min() + 1
+                    w2 = xs2.max() - xs2.min() + 1
+                    if w2 / h2 >= 1.15:
+                        ups.append(False); continue
+                    fband = (a > 30)[ys2.max() - 19:ys2.max() + 1, :]
+                    fxs = np.where(fband.any(0))[0]
+                    gfrac = (fxs.max() - fxs.min()) / w2 if len(fxs) else 1.0
+                    ups.append(gfrac <= 0.35)
+                runs, cur = [], []
+                for i2, u in enumerate(ups):
+                    if u:
+                        cur.append(i2)
+                    else:
+                        if cur:
+                            runs.append(cur)
+                        cur = []
+                if cur:
+                    runs.append(cur)
+                runs = [r for r in runs if len(r) >= 16]
+                if runs:
+                    rr = max(runs, key=len)
+                    s, e = s + rr[0], s + rr[-1] + 1
+                    print(f'  v80 dance 2leg gate [{s}:{e}] len={e-s} '
+                          f'({sum(ups)}/{len(ups)} upright2leg)', flush=True)
+                else:
+                    print('  v80 dance gate: no 16f 2leg run, keep full window', flush=True)
             if name == 'idle':
                 # v75: 正面idle视频尾部混入play-bow/趴卧段（idle应全程站立, h/w≈1.2;
                 # 趴卧h/w≈0.6-0.85）→ 从尾部裁除非站立帧。
@@ -866,13 +1234,38 @@ def process_state(name):
                 print(f'  idle crouch-trim → [{s}:{e}]', flush=True)
         if e - s < 4:
             print('  TOO FEW, skip', flush=True); return
-        sel = stabilize_h_mats(mats)[s:e]
+        if name == 'kiss':
+            # v102: kiss 走近变大被 stabilize 相位相关误判为水平漂移→错位移帧
+            # (fin大小序反转); 且rembg对极小主体偶失败留整块背景(fill≈1大CC)。
+            # 跳过stabilize + 按fill判据剔除背景残留帧。
+            good = []
+            for p in mats:
+                a = np.array(Image.open(p).convert('RGBA'))
+                core = a[:, :, 3] > 127
+                rgb = a[:, :, :3].astype(int)
+                # 背景残留 = rembg失败整块alpha=255且RGB=青底; 狗身无大面积青色
+                teal = core & (abs(rgb[:, :, 0] - 0) < 60) & (abs(rgb[:, :, 1] - 168) < 60) & (abs(rgb[:, :, 2] - 180) < 60)
+                if int(teal.sum()) > 0.3 * a.shape[0] * a.shape[1]:
+                    continue
+                good.append(p)
+            print(f'  kiss: skip stabilize, dropped {len(mats) - len(good)} bg-residue frames', flush=True)
+            sel = good
+        else:
+            sel = stabilize_h_mats(mats)[s:e]
     if name in ('walk', 'run'):
         sel = treadmill_mats(sel, name)   # v57: normalize前对齐→union-bbox收缩到狗本体→scale由target_h决定 (v58: 非破坏性)
+    elif name == 'roll':
+        # v76: roll滚动时左右非线性徘徊(质心p2p=784px)→union-bbox宽1436→宽度钳制
+        # 压死scale→仅473/500。中值去趋势W=25分离徘徊(趋势)与滚动摆动(残差90px保留)
+        # →union_w=656不受钳制→精确恢复500。
+        sel = treadmill_mats(sel, name, mode='median', win=25)
     frames = normalize_frames(sel, TARGET_H.get(name))
     if not frames:
         print('  normalize failed', flush=True); return
     frames = refit_bounds(frames)      # 修 stabilize roll 漂移导致的边界截断（walk左/run右）
+    if name == 'roll':
+        frames = warm_balance_frames(frames)   # v107: 发青修复(白点增益→idle认可暖白)
+        frames = roll_perframe_scale(frames)   # v101: 站/躺逐帧锚定对齐主体档
     if name == 'sleep':
         frames = sleep_scale_frames(frames)
     if name == 'beg':
@@ -881,48 +1274,83 @@ def process_state(name):
         seq = frames + frames[-2:0:-1]
     elif name in ONESHOT:
         seq = frames          # intro+loop 分段在引擎 ANIMS 的 intro_frames 处理
-    else:
-        if name in ('walk', 'run'):
-            # v60: walk=2原生周期真实帧(v55双周期结构, 无v58重采样/crossfade陷阱)。
-            # 根因(v60取证): 单周期循环每1.2s完全相同帧原样重播+wrap接缝跳变
-            # (实测walk接缝alpha差88.5=帧间均值40.2的2.2倍 vs 认可版47.5/73.8=0.64比)
-            # =用户报"一套动画帧不断重复播放"。2周期窗含AI视频周期间自然微差异,
-            # 且用find_walk_loop在2T窗口扫描最优wrap接缝。run保持单周期(用户已认可:
-            # 跑动帧间差79.1已达认可版86.5量级, 双周期会拉长gallop节奏)。
+    if name in ('walk', 'run'):
+        if name == 'walk' and len(frames) >= 40:
+            # v82b: AI步态无严格周期(取证: lag-diff曲线无周期dip, find_gait_loop
+            # T=43错检→44帧单周期循环太短+接缝跳=重复/顿挫感)。整窗长循环+
+            # find_loop_pair最优wrap接缝(83f@42ms≈3.5s循环, 防重复原理同v75 3T但不依赖周期)。
+            i, j, d = find_loop_pair(frames, min_span_frac=0.7)
+            # v85: 旧0.33在66帧profile窗里选25帧短对=1s循环=重复感。0.7→loop≥46帧
+            # (≈2s@42ms)接近整窗长循环, wrap接缝仍最优。
+            seq = frames[i:j + 1]
+            print(f'  walk long-loop pair ({i},{j}) seam={d:.1f} len={len(seq)}', flush=True)
+            seq = detrend_seq(seq)
+            print(f'  stride1 full-rate sample: {len(seq)} frames', flush=True)
+        elif name == 'run':
+            # v100: run移植walk v82b长循环——旧find_gait_loop T=35单周期36帧
+            # resample 15(2.4:1抽帧)+0.81s短循环=用户报"卡/重复感"。长循环≥25帧原生@42ms。
+            i, j, d = find_loop_pair(frames, min_span_frac=0.7)
+            seq = frames[i:j + 1]
+            print(f'  run long-loop pair ({i},{j}) seam={d:.1f} len={len(seq)}', flush=True)
+            seq = detrend_seq(seq)
+            print(f'  stride1 full-rate sample: {len(seq)} frames', flush=True)
+        else:
             i, j = find_gait_loop(frames)
             T = j - i
-            if name == 'walk' and i + 3 * T < len(frames):
+            # v79: 门控用窗口长度而非gait起点i(find_walk_loop自扫最优起点w∈[0,n-3T]);
+            # 旧条件i+3T<len会把"后段才稳定"的视频误退单周期(9帧循环=发颠)。
+            if name == 'walk' and 3 * T + 1 <= len(frames):
                 # v75: 3原生周期（v61认可版28帧=3周期@stride2；19帧2周期=用户报
                 # "动画重复播放"根因：循环太短1.6s）。3周期≈2.8s循环，重复感减半。
                 w, seam = find_walk_loop(frames, T, nperiods=3)
                 seq = frames[w:w + 3 * T + 1]
                 print(f'  gait seq: {len(seq)} frames = 3 native periods (T={T} start={w} seam={seam:.1f})', flush=True)
                 seq = detrend_seq(seq)   # v60: 子窗口残留漂移二次去除(run已认可不动)
-                # v60d: 隔帧抽样(stride2)。根因取证: golden全帧提取帧间RGB差仅15
-                # (24fps每帧微动) vs 认可版labrador=21/husky=40(隔帧提取, 每帧动作幅度大),
-                # 小帧差=视觉上"慢速翻页式重复"。stride2后fd=22.4≈labrador认可版21,
-                # 双周期结构保留(周期不重复), 帧延迟翻倍保持原生步频。
-                seq = seq[::2]
-                print(f'  stride2 sample: {len(seq)} frames (T={T // 2})', flush=True)
+                # v82: stride1全帧(废v60d stride2)。用户报"滑行"根因: 隔帧抽样帧间
+                # 相位推进过大/帧率不匹配=读作滑动而非流畅迈步。全帧@42ms原生步频。
+                print(f'  stride1 full-rate sample: {len(seq)} frames (T={T})', flush=True)
             else:
                 seq = frames[i:j + 1]
                 if name == 'walk':
-                    # 单周期回退(2T窗口超出素材时)同样stride2: 24fps全帧帧间差过小
-                    # (慢速翻页式重复), stride2放大每帧动作幅度(≈labrador认可版fd)。
-                    seq = seq[::2]
-                    print(f'  stride2 sample: {len(seq)} frames (T={T // 2})', flush=True)
+                    print(f'  stride1 full-rate sample: {len(seq)} frames (T={T})', flush=True)
                 print(f'  gait seq: {len(seq)} frames = 1 native period (T={T})', flush=True)
+    else:
+        if name in ('roll', 'kiss'):
+            # v88: 灰底重生成版=完整一次性动作(站→仰滚→翻回)。旧loop pair(52,92)
+            # 只取41帧中段resample到121=3倍重复帧=卡顿+动作放慢3倍。全窗口
+            # 118帧@原生步幅→resample 121≈1:1, 与引擎121@42ms one-shot设计匹配。
+            # v100: kiss同roll——1043行ONESHOT分支的seq被本else分支loop pair覆盖(死代码bug)，
+            # kiss 42帧resample 121=3倍重复帧，一次性动作必须全窗口原生帧。
+            seq = frames
+            print(f'  roll full-window oneshot: {len(seq)} native frames', flush=True)
         else:
-            i, j, d = find_loop_pair(frames)
-            seq = frames[i:j + 1]
-            print(f'  loop pair ({i},{j}) seam={d:.1f}', flush=True)
-    if name in RT_FRAMES:
+            # v100: type默认0.33选出24帧短周期, resample 57=2.4x慢动作(违反v53原生速度铁律)。
+            # 0.7长循环+下方跳过resample=原生帧@42ms≈24fps原生速度。
+            if name == 'type':
+                i, j, d = find_loop_pair(frames, min_span_frac=0.7)
+                seq = frames[i:j + 1]
+                print(f'  type long loop pair ({i},{j}) seam={d:.1f} native={len(seq)}', flush=True)
+            else:
+                i, j, d = find_loop_pair(frames)
+                seq = frames[i:j + 1]
+                print(f'  loop pair ({i},{j}) seam={d:.1f}', flush=True)
+    if name in RT_FRAMES and name != 'type':
         seq = resample_seq(seq, RT_FRAMES[name])
+    if name == 'walk':
+        seq = walk_width_norm(seq)   # v85: 尺寸统一, 对齐基线candC宽度712
     for k, f in enumerate(seq):
         im = harden_alpha(f)
         if name == 'bath':
             im = harden_foam(im)
         im.save(os.path.join(OUT_DIR, f'{name}_{k:02d}.png'))
+    # v106: prune旧帧——帧数减少时残留幽灵帧(deploy误读/审计误报)
+    for old in glob.glob(os.path.join(OUT_DIR, f'{name}_*.png')):
+        try:
+            idx = int(os.path.basename(old)[len(name) + 1:-4])
+        except ValueError:
+            continue
+        if idx >= len(seq):
+            os.remove(old)
     print(f'  WROTE {len(seq)} frames → {OUT_DIR}/{name}_*', flush=True)
     return len(seq)
 

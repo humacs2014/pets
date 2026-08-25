@@ -16,6 +16,7 @@ AI 视频循环边界帧道具整体缩小=道具"时隐时现"。RGB 检查查�
 """
 import os, sys, glob
 import numpy as np
+from scipy import ndimage
 from PIL import Image
 
 ASSETS = os.environ.get('PROP_ASSETS', 'assets')
@@ -45,10 +46,18 @@ def dil(m, k):
 
 
 def bowl_geo(a):
-    Rm = prop_mask(a)
-    n = int(Rm.sum())
-    if n == 0:
+    Rm0 = prop_mask(a)
+    n0 = int(Rm0.sum())
+    if n0 == 0:
         return None
+    # v79k: 碗=最大连通域 (颊/耳红误报散点被排除, ytop 恒=真碗沿)
+    lab, nl = ndimage.label(Rm0)
+    if nl > 1:
+        sizes = ndimage.sum(Rm0, lab, range(1, nl + 1))
+        Rm = (lab == int(np.argmax(sizes)) + 1)
+    else:
+        Rm = Rm0
+    n = int(Rm.sum())
     ys, xs = np.where(Rm)
     return Rm, n, int(xs.min()), int(xs.max()), int(ys.min())
 

@@ -1,70 +1,71 @@
 # -*- coding: utf-8 -*-
-"""v73: eat 悬空棕色噪点横条修复。
-横条=暗棕噪点矩形，逐行水平run>=90连续（毛发阴影不形成这种长run）。
-聚类：连续>=15个run行且x区间互叠=一条bar；仅删run像素dilate2，毛发不碰。
-用法: env -u PYTHONPATH -u PYTHONHOME <anaconda>/python.exe fix_eat_bar.py
-"""
-import glob
+"""v79i: eat 长方形条清除（竖直直线检测）。
+bar 特征: 右界 xR 在 ≥25 连续行内恒定(竖直边), 且该值 > 上下±60行中位数+10。
+碗/耳轮廓为弧线(连续同值行少), 不触发。frames+assets 都擦。"""
+import os
+import statistics
 import numpy as np
 from PIL import Image
 
-def dilate(m, it=2):
-    for _ in range(it):
-        m2 = m.copy()
-        m2[1:, :] |= m[:-1, :]; m2[:-1, :] |= m[1:, :]
-        m2[:, 1:] |= m[:, :-1]; m2[:, :-1] |= m[:, 1:]
-        m = m2
-    return m
+ROOT = os.path.dirname(os.path.abspath(__file__))
 
-for f in sorted(glob.glob('assets/eat_*.png')):
-    img = Image.open(f).convert('RGBA')
-    a = np.array(img).astype(int)
-    rgb, al = a[..., :3], a[..., 3]
-    R, G, B = rgb[..., 0], rgb[..., 1], rgb[..., 2]
-    db = (al > 200) & (R >= 90) & (R <= 180) & (R - B >= 45) & (R - B <= 115) & (G < R - 15)
-    H, W = db.shape
-    runs = {}
+
+def clean_arr(a):
+    H = a.shape[0]
+    xR = np.full(H, -1, int)
     for y in range(H):
-        row = db[y]
-        x = 0
-        segs = []
-        while x < W:
-            if row[x]:
-                x0 = x
-                while x < W and row[x]:
-                    x += 1
-                if x - x0 >= 90:
-                    segs.append((x0, x))
-            else:
-                x += 1
-        if segs:
-            runs[y] = segs
-    if not runs:
-        continue
-    # 聚类连续run行（x互叠）
-    bands = []
-    ys = sorted(runs)
-    cur = [ys[0]]
-    for y in ys[1:]:
-        if y - cur[-1] <= 2:
-            prev = runs[cur[-1]]
-            if any(a0 < b1 and b0 < a1 for a0, a1 in prev for b0, b1 in runs[y]):
-                cur.append(y); continue
-        bands.append(cur); cur = [y]
-    bands.append(cur)
-    out = np.array(img)
-    fixed = 0
-    for band in bands:
-        if len(band) < 15:
+        xs = np.nonzero(a[y, :, 3] > 30)[0]
+        if len(xs) > 3:
+            xR[y] = xs.max()
+    # 连续同值(±1) run
+    runs = []
+    y = 0
+    while y < H:
+        if xR[y] < 0:
+            y += 1
             continue
-        m = np.zeros((H, W), bool)
-        for y in band:
-            for x0, x1 in runs[y]:
-                m[y, x0:x1] = True
-        m = dilate(m, 2)
-        fixed += int(m.sum())
-        out[..., 3][m] = 0
-    if fixed:
-        Image.fromarray(out).save(f)
-        print(f.split('\\')[-1], 'bar removed', fixed)
-print('DONE')
+        v = xR[y]
+        y1 = y
+        while y1 + 1 < H and xR[y1 + 1] >= 0 and abs(xR[y1 + 1] - v) <= 1:
+            y1 += 1
+        runs.append((y, y1, v))
+        y = y1 + 1
+    erased = 0
+    for y0, y1, v in runs:
+        if y1 - y0 + 1 < 25:
+            continue
+        win = [xR[t] for t in range(max(0, y0 - 60), min(H, y1 + 61)) if xR[t] > 0]
+        ref = statistics.median(win)
+        if v - ref <= 10:
+            continue
+        # bar: 清 [ref+2, v] 仅实像素(>=240), 保头缘半透 fringe
+        for y in range(y0, y1 + 1):
+            for x in range(int(ref) + 2, xR[y] + 1):
+                if a[y, x, 3] >= 240:
+                    a[y, x, 3] = 0
+                    erased += 1
+    return erased
+
+
+def clean_dir(d, ext):
+    tot = 0
+    i = 0
+    while True:
+        p = os.path.join(d, f'eat_{i:02d}.{ext}')
+        if not os.path.exists(p):
+            break
+        im = Image.open(p).convert('RGBA')
+        a = np.array(im)
+        e = clean_arr(a)
+        if e:
+            Image.fromarray(a, 'RGBA').save(p)
+        tot += e
+        i += 1
+    return i, tot
+
+
+for d, ext in ((os.path.join(ROOT, 'frames'), 'png'),
+               (os.path.join(ROOT, 'assets'), 'png')):
+    n, tot = clean_dir(d, ext)
+    print(f'{os.path.basename(d)}: {n} frames, erased={tot}', flush=True)
+print('DONE', flush=True)
