@@ -258,8 +258,9 @@ def state_shift(st):
     cur = _lab_mean(fs[len(fs) // 2])
     return ref_lab() - cur
 
-def save_retry(im, fp, tries=5):
-    """Windows下杀软/索引瞬时锁文件→OSError 22; 重试退避解决。"""
+def save_retry(im, fp, tries=15):
+    """Windows下杀软/索引瞬时锁文件→OSError 22; 重试退避解决。
+    deploy刚写完2183文件时Defender实时扫描会长时间锁定，退避须足够长。"""
     import time
     for t in range(tries):
         try:
@@ -268,7 +269,7 @@ def save_retry(im, fp, tries=5):
         except OSError:
             if t == tries - 1:
                 raise
-            time.sleep(0.5 * (t + 1))
+            time.sleep(min(2.0 * (t + 1), 8))
 
 def temporal_white_stable(state):
     """首帧锚定态时序白色稳定——视频模型逐帧生成的白色镜面高光(眼/颊/道具表面)

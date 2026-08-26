@@ -68,9 +68,9 @@ ANIMS = {
     # v-samoyed2 全量回填: 20状态源视频=用户肉眼验收动作, 全态native 24fps全窗。
     #   帧数=extract实测(121全窗/walk44/run87步态闭环), frame_ms=42(24fps),
     #   loop/intro按detect_intro.py实测: 有站立→姿态过渡且loop段过短者改一次性(播放一遍=视频)。
-    'idle':      ('idle',      121, 42,  True,  0),   # 全窗+linear treadmill去漂; 微动loop
+    'idle':      ('idle',      48,  42,  True,  0),   # v110b: calmest窗[72:120)弃开场抖腿段
     'walk':      ('walk',      44, 42,  True,  0),   # 步态闭环find_loop_pair
-    'run':       ('run',       87, 42,  True,  0),   # 步态长循环闭环
+    'run':       ('run',       80, 42,  True,  0),   # v110b: 长循环闭环实测80
     'eat':       ('eat',       121, 42,  False, 0),  # 站→走近→趴吃 播放一遍=视频(duration释放)
     'bark':      ('bark',      121, 42,  True,  0),
     'sleep':     ('sleep',     121, 42,  False, 0),  # 站→躺播放一遍, 钳末帧=持续睡眠
@@ -80,15 +80,15 @@ ANIMS = {
     'roll':      ('roll',      121, 42, False, 0),   # 全窗一次性(站→滚→回)
     'dance':     ('dance',     121, 42,  True,  0),
     'stretch':   ('stretch',   121, 42, False, 0),
-    'beg':       ('beg',       121, 42,  True,  0),
+    'beg':       ('beg',       77,  42,  True,  0),   # v110b: tail-trim弃下半截断尾段
     'bath':      ('bath',      121, 42,  True,  0),  # 视频起点即入盆, 洗澡loop
     'surprised': ('surprised', 121, 42, False, 0),
     'play_dead': ('play_dead', 121, 42,  False, 0),
     'pet':       ('pet',       121, 42, False, 0),
     'kiss':      ('kiss',      121, 42, False, 0),
     'wave':      ('wave',      121, 42, False, 0),
-    'type':      ('type',      121, 42, True,  0),   # 整视频敲键loop
-    'potty_run': ('run',       87, 42,  True,  0),  # 复用run帧，帧数必须与run一致
+    'type':      ('type',      119, 42, True,  0),   # v110b: ghost-drop弃前2帧灰斑块; 整视频敲键loop
+    'potty_run': ('run',       80, 42,  True,  0),  # 复用run帧，帧数必须与run一致
     'potty':     ('sit',       121, 42,  True,  0),  # 复用sit帧
 }
 

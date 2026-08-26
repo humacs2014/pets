@@ -43,7 +43,7 @@ TARGET_H = {
     'lick': 542, 'surprised': 544,
     'eat': 474,
     'pet': 546,   # 摸摸头: 站姿档(视频为四腿站立3/4视), 与idle/bark同档防忽大忽小
-    'roll': 630, 'play_dead': 344,    # v76: roll躺卧档358→500; v101: 500→630对齐青底新管线主体档(用户报roll比主体小)
+    'roll': 546, 'play_dead': 344,    # v110: 630→546(#3用户报roll比其他大; 取证meanW624 vs sit525; 站姿档对齐idle)
     'kiss': 630, 'wave': 630, 'type': 640,  # v100: kiss/wave坐姿档=sit 630; type含键盘整体bbox 640
 }
 # 重采样到引擎 ANIMS 声明帧数（引擎按 count 加载，帧数必须 1:1）
@@ -852,6 +852,166 @@ def stabilize_h(frames):
         out.append(Image.fromarray(arr))
     return out
 
+def stabilize2d_mats(mats, win=5):
+    """v110 (#1#2): 2D相位相关高频抖动去除——stabilize_h_mats只稳水平, 垂直弹跳/
+    AI视频时序微抖残留=用户报"不少动作画面不停抖动/抖腿"。累积位移序列median(win)
+    =低频参考(大动作), 修正量=raw-smooth=仅高频抖动(±几px), 大动作(滚/步态)不被破坏。
+    随后alpha 3中值去逐帧毛刺闪烁。覆写 mats。幂等(二次跑修正量≈0)。"""
+    from scipy.ndimage import median_filter
+    imgs = [Image.open(p).convert('RGBA') for p in mats]
+    Wc = max(im.width for im in imgs); Hc = max(im.height for im in imgs)
+    base = []
+    for im in imgs:
+        c = Image.new('RGBA', (Wc, Hc), (0, 0, 0, 0))
+        c.paste(im, (0, 0))
+        base.append(np.array(c)[:, :, 3].astype(np.float32))
+    sx = [0.0]; sy = [0.0]
+    for i in range(1, len(base)):
+        f0, f1 = np.fft.fft2(base[i - 1]), np.fft.fft2(base[i])
+        cp = f0 * np.conj(f1)
+        peak = np.fft.ifft2(cp / (np.abs(cp) + 1e-9))
+        pk = np.unravel_index(np.argmax(np.abs(peak)), peak.shape)
+        dx = pk[1] if pk[1] < Wc // 2 else pk[1] - Wc
+        dy = pk[0] if pk[0] < Hc // 2 else pk[0] - Hc
+        dx = max(-16, min(16, dx)); dy = max(-16, min(16, dy))
+        sx.append(sx[-1] + dx); sy.append(sy[-1] + dy)
+    sxr, syr = np.array(sx), np.array(sy)
+    cx = np.round(sxr - median_filter(sxr, size=win)).astype(int)
+    cy = np.round(syr - median_filter(syr, size=win)).astype(int)
+    extx = int(max(abs(v) for v in cx)) + 16
+    exty = int(max(abs(v) for v in cy)) + 16
+    H2, W2 = Hc + 2 * exty, Wc + 2 * extx
+    # v110b: 全部帧统一到扩展画布(内存), 再blend, 再同尺寸存盘——
+    # 修复v110a逐帧不同尺寸广播崩溃。
+    shifted = []
+    moved = 0
+    for i, im in enumerate(imgs):
+        c = np.zeros((H2, W2, 4), np.uint8)
+        c[exty:exty + im.height, extx:extx + im.width] = np.array(im)
+        if cx[i] or cy[i]:
+            c = np.roll(c, (-int(cy[i]), -int(cx[i])), axis=(0, 1))
+            if cy[i] > 0: c[:cy[i]] = 0
+            elif cy[i] < 0: c[cy[i]:] = 0
+            if cx[i] > 0: c[:, :cx[i]] = 0
+            elif cx[i] < 0: c[:, cx[i]:] = 0
+            moved += 1
+        shifted.append(c)
+    # alpha时域3帧FIR blend(0.25/0.5/0.25): AI视频轮廓/腿逐帧微跳=肉眼抖动;
+    # ≥128→255(3帧多数位置=平滑轮廓); 被blend补alpha的像素RGB用邻帧alpha加权外推(防黑边)。
+    for i in range(1, len(shifted) - 1):
+        a_cur = shifted[i][:, :, 3].astype(np.float32)
+        b = 0.25 * shifted[i - 1][:, :, 3] + 0.5 * a_cur + 0.25 * shifted[i + 1][:, :, 3]
+        new_a = np.where(b >= 128, 255, np.round(b)).astype(np.uint8)
+        add = (new_a == 255) & (a_cur < 128)
+        if add.any():
+            pa = shifted[i - 1][:, :, 3].astype(np.float32) / 255.0
+            na = shifted[i + 1][:, :, 3].astype(np.float32) / 255.0
+            wsum = (pa + na)[..., None] + 1e-6
+            fill = (pa[..., None] * shifted[i - 1][:, :, :3] + na[..., None] * shifted[i + 1][:, :, :3]) / wsum
+            rgb = shifted[i][:, :, :3].astype(np.float32)
+            rgb = np.where(add[..., None], fill, rgb)
+            shifted[i][:, :, :3] = np.round(rgb).astype(np.uint8)
+        shifted[i][:, :, 3] = new_a
+    for c, p in zip(shifted, mats):
+        Image.fromarray(c).save(p)
+    print(f'  stabilize2d: shift-corrected {moved}/{len(mats)} + alpha-blend {len(mats)-2} (ext={extx},{exty})', flush=True)
+    return mats
+
+def calmest_window(mats, win=48):
+    """v110 (#2): 选mask-jump均值最低的win长窗(idle开场抖腿段剔除)。数据驱动。"""
+    areas = []
+    masks = []
+    for p in mats:
+        m = np.array(Image.open(p).convert('RGBA'))[:, :, 3] > 30
+        masks.append(m); areas.append(m.sum())
+    js = []
+    for i in range(1, len(masks)):
+        js.append((masks[i - 1] ^ masks[i]).sum() / max(areas[i - 1], 1))
+    js = np.array(js)
+    if len(js) < win:
+        return 0, len(mats)
+    best_s, best_v = 0, None
+    for s in range(0, len(js) - win + 2, 2):
+        v = js[s:s + win - 1].mean()
+        if best_v is None or v < best_v:
+            best_v, best_s = v, s
+    print(f'  calmest window [{best_s}:{best_s + win}) mean_jump={best_v:.3f} (full={js.mean():.3f})', flush=True)
+    return best_s, best_s + win
+
+def type_drop_ghost(mats):
+    """v110 (#6): 源视频开头灰色斑块被isnet当主体→弃帧。判据: 上半亮neutral块
+    (v>=225,sat<25)面积>1.4×中位数=含斑块。数据驱动, 仅删超标帧。"""
+    vals = []
+    for p in mats:
+        a = np.array(Image.open(p).convert('RGBA'), np.int32)
+        m = a[:, :, 3] > 30
+        v = a[:, :, :3].max(axis=2); sat = v - a[:, :, :3].min(axis=2)
+        ys, xs = np.where(m)
+        tb = 0
+        if len(ys):
+            y0 = ys.min(); hh = ys.max() - y0 + 1
+            band = np.zeros_like(m); band[y0:y0 + int(0.5 * hh)] = True
+            tb = int((m & band & (v >= 225) & (sat < 25)).sum())
+        vals.append(tb)
+    vals = np.array(vals)
+    med = np.median(vals[2:]) if len(vals) > 4 else np.median(vals)
+    thr = 1.4 * max(med, 1)
+    keep = [p for p, t in zip(mats, vals) if t <= thr]
+    print(f'  type ghost-drop: {len(mats) - len(keep)} frames (thr={thr:.0f} med={med:.0f})', flush=True)
+    return keep if keep else mats
+
+def kiss_degray(mats):
+    """v110 (#5): kiss走近凑脸段rembg把灰色渐变背景当主体保留(面积极达83%画布,
+    四角r==g==b灰 alpha半透)=用户报"背景灰色闪烁"。flood-fill从边界连通的
+    neutral灰区(sat<=12, v<=240)清零。数据驱动逐帧。"""
+    from scipy.ndimage import label
+    for p in mats:
+        im = Image.open(p).convert('RGBA')
+        a = np.array(im)
+        rgb = a[:, :, :3].astype(np.int32); al = a[:, :, 3]
+        sat = rgb.max(axis=2) - rgb.min(axis=2); v = rgb.max(axis=2)
+        grayish = (al > 0) & (sat <= 12) & (v <= 240)
+        lab, n = label(grayish)
+        if n == 0:
+            continue
+        border = set(lab[0, :]) | set(lab[-1, :]) | set(lab[:, 0]) | set(lab[:, -1])
+        border.discard(0)
+        if not border:
+            continue
+        kill = np.isin(lab, list(border))
+        a[kill, 3] = 0
+        Image.fromarray(a).save(p)
+    print(f'  kiss degray: flood-filled border-gray on {len(mats)} frames', flush=True)
+    return mats
+
+def beg_trim_tail(mats, thr=0.25):
+    """v110 (#7): beg作揖后段下半身被源视频画框截断(底部3行填充率骤升=平切)。
+    从尾回扫第一个fill<thr的帧=截断点, 弃尾。数据驱动。"""
+    fills = []
+    for p in mats:
+        m = np.array(Image.open(p).convert('RGBA'))[:, :, 3] > 30
+        ys, xs = np.where(m)
+        if len(ys) == 0:
+            fills.append(0.0); continue
+        bot = ys.max(); w = m[ys.min():bot + 1].any(axis=0).sum()
+        fills.append(m[max(bot - 2, 0):bot + 1].sum() / max(w * 3, 1))
+    fills = np.array(fills)
+    e = len(mats)
+    for i in range(len(mats) - 1, -1, -1):
+        if fills[i] < thr:
+            e = i + 1; break
+    print(f'  beg tail-trim: [{0}:{e}) (tail fill={fills[-1]:.2f} thr={thr})', flush=True)
+    return 0, e
+
+def soft_highlight(img, knee=210.0, ratio=0.45):
+    """v110 (#4): bath泡沫硬化后白毛过曝(v>240占82%)。knee以上向knee压缩:
+    out=knee+(v-knee)*ratio, 保泡沫立体感去白闪。"""
+    a = np.array(img).astype(np.float32)
+    rgb = a[:, :, :3]
+    over = np.clip(rgb - knee, 0, None)
+    a[:, :, :3] = rgb - over * (1 - ratio)
+    return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8), 'RGBA')
+
 def _gait_profile(mats, min_len=40, leg_span_check=True, ar_lo=1.15, ar_hi=1.55, gap_tol=0):
     """walk/run 姿态选窗: 侧身档 ar∈[ar_lo,ar_hi](>1.55=趴卧段) + 腿质量span<0.9,
     取最长连续段(min_len)。gait_window 只按运动量选, 会选中正面intro(头动大)或趴卧段——
@@ -1065,6 +1225,23 @@ def process_state(name):
         # v-samoyed2: 新批次全部白底视频——drop_whitebg会删光所有帧, 停用。
         fps = drop_whitebg(fps)
     mats = cutout_frames(fps, name)
+    # ═══ v110: 7缺陷修复分支 ═══
+    # v110b修正: stabilize2d先跑(内部统一画布→同尺寸存盘, 幂等), 否则抠帧尺寸
+    # 不一时后续calmest/beg_trim的mask异或会崩溃(832,1602 vs 832,1668)。
+    if name not in ('walk', 'run'):
+        mats = stabilize2d_mats(mats)     # #1 全态2D高频抖动去除(walk/run步态自有treadmill)
+    if name == 'kiss':
+        mats = kiss_degray(mats)          # #5 走近凑脸段灰背景闪烁
+    if name == 'type':
+        mats = type_drop_ghost(mats)      # #6 开头ghost斑块帧弃掉
+    if name == 'idle':
+        s0, e0 = calmest_window(mats)     # #2 开场抖腿段弃掉
+        mats = mats[s0:e0]
+    if name == 'beg':
+        _, e0 = beg_trim_tail(mats)       # #7 后段下半身截断弃尾
+        mats = mats[:e0]
+    if name not in ('walk', 'run'):
+        mats = stabilize2d_mats(mats)     # #2二次(选窗子集): 幂等, 修正量≈0
     if name in ('sleep_legacy_filter', 'stretch_legacy_filter'):
         # v-samoyed2: 旧过滤(剔站立过渡帧)与"视频=动作"铁律冲突, 且过滤结果仅用于
         # assert(sel随后被stabilize覆盖=死代码门)。新视频站→躺过渡是认可内容, 全窗保留;
@@ -1170,24 +1347,9 @@ def process_state(name):
                 pass
         if e - s < 4:
             print('  TOO FEW, skip', flush=True); return
-        if name == 'kiss':
-            # v102: kiss 走近变大被 stabilize 相位相关误判为水平漂移→错位移帧
-            # (fin大小序反转); 且rembg对极小主体偶失败留整块背景(fill≈1大CC)。
-            # 跳过stabilize + 按fill判据剔除背景残留帧。
-            good = []
-            for p in mats:
-                a = np.array(Image.open(p).convert('RGBA'))
-                core = a[:, :, 3] > 127
-                rgb = a[:, :, :3].astype(int)
-                # 背景残留 = rembg失败整块alpha=255且RGB=青底; 狗身无大面积青色
-                teal = core & (abs(rgb[:, :, 0] - 0) < 60) & (abs(rgb[:, :, 1] - 168) < 60) & (abs(rgb[:, :, 2] - 180) < 60)
-                if int(teal.sum()) > 0.3 * a.shape[0] * a.shape[1]:
-                    continue
-                good.append(p)
-            print(f'  kiss: skip stabilize, dropped {len(mats) - len(good)} bg-residue frames', flush=True)
-            sel = good
-        else:
-            sel = stabilize_h_mats(mats)[s:e]
+        # v110: kiss degray已前移到选窗前, 灰背景不再撑大union/干扰相位相关,
+        # 恢复统一水平stabilize(旧skip分支v102已废)。
+        sel = stabilize_h_mats(mats)[s:e]
     if name in ('walk', 'run'):
         sel = treadmill_mats(sel, name)   # v57: normalize前对齐→union-bbox收缩到狗本体→scale由target_h决定 (v58: 非破坏性)
     elif name == 'idle':
@@ -1290,6 +1452,7 @@ def process_state(name):
         im = harden_alpha(f)
         if name == 'bath':
             im = harden_foam(im)
+            im = soft_highlight(im)   # v110 #4: 泡沫硬化后白毛过曝(82% v>240)→knee压缩
         im.save(os.path.join(OUT_DIR, f'{name}_{k:02d}.png'))
     # v106: prune旧帧——帧数减少时残留幽灵帧(deploy误读/审计误报)
     for old in glob.glob(os.path.join(OUT_DIR, f'{name}_*.png')):
