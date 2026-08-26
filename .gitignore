@@ -1,0 +1,9 @@
+assets/_bk_*/
+_archive/
+videos/
+frames/
+build/
+__pycache__/
+*.pyc
+_smoke_*.png
+_qa_*
