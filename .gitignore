@@ -7,3 +7,15 @@ __pycache__/
 *.pyc
 _smoke_*.png
 _qa_*
+dist/
+_probe/
+_audit/
+_calib/
+_mats/
+_mats_*/
+_raw/
+_raw_*/
+_tread_tmp*/
+_type_check/
+*.log
+keyhex*

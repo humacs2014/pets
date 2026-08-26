@@ -13,14 +13,13 @@ ASSETS = os.path.join(ROOT, 'assets')
 # 引擎 ANIMS 声明帧数（必须与主程序 ANIMS 字典 1:1）
 # walk/run = gait 定制态（2完整步态周期；golden 认可 28/15，labrador 30/32，柴犬 mochi 28/88——换宠物以引擎 ANIMS 为准同步改这里）
 # 追加状态（如 kiss/wave/type）同步在此登记帧数
+# v-samoyed2 全量回填实测值（与引擎 ANIMS 1:1）：121全窗/walk44/run87
 ANIMS = {
-    'idle': 101, 'walk': 28, 'run': 88, 'eat': 34, 'bark': 57,
-    'sleep': 51, 'sit': 63, 'lick': 54, 'happy': 121, 'roll': 47,
-    'dance': 57, 'stretch': 117, 'beg': 56, 'bath': 57,
-    'surprised': 45, 'play_dead': 68, 'pet': 107,
-    # ⚠️ walk/run 帧数随新宠物步态周期自适应（walk=3T原生、run=长循环闭环）——
-    #   extract 完成后从日志 `WROTE N frames` 读实测 N 回填此处 + 引擎 ANIMS 两处。
-    #   mochi 实测 run=88 长循环@42ms≈3.7s（旧 15 帧短循环=卡/重复感已废）。
+    'idle': 121, 'walk': 44, 'run': 87, 'eat': 121, 'bark': 121,
+    'sleep': 121, 'sit': 121, 'lick': 121, 'happy': 121, 'roll': 121,
+    'dance': 121, 'stretch': 121, 'beg': 121, 'bath': 121,
+    'surprised': 121, 'play_dead': 121, 'pet': 121,
+    'kiss': 121, 'wave': 121, 'type': 121,
 }
 
 do_copy = '--copy' in sys.argv

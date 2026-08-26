@@ -24,9 +24,13 @@ GROUND = 956                   # walk/run 脚底线（canvas 1024 内，=478/512
 SLEEP_SIT_H, SLEEP_LIE_H = 600.0, 408.0   # v2: ×2 同步1024画布
 
 # ping-pong 往复类（正播+倒播）
-PINGPONG = {'idle', 'eat', 'bark', 'sit', 'dance', 'beg', 'bath'}
+# v-samoyed2: 用户铁律"宠物动作按本次验收视频完成"——ping-pong倒播非视频内容、
+# resample抽帧=2倍速/掉帧，全废。新批次全部native 24fps全帧。
+PINGPONG = set()
 # 一次性/过渡类
-ONESHOT = {'sleep', 'stretch', 'happy', 'surprised', 'play_dead', 'pet', 'kiss'}  # v100: kiss一次性全帧
+ONESHOT = {'sleep', 'stretch', 'happy', 'surprised', 'play_dead', 'pet', 'kiss',
+           'idle', 'eat', 'bark', 'sit', 'dance', 'beg', 'bath', 'lick',
+           'roll', 'wave', 'type'}  # v-samoyed2: 全态native全窗; type整视频敲键=全窗(loop由引擎ANIMS定)
 # v100: 3新动作（亲亲/挥手/敲键盘），参考图质量路线=高对比青底源
 # 高度锚定 target_h 按姿态档（跨档=忽大忽小）。新宠物标定法：先跑 idle 测站立 h≈274，
 # 坐姿视频取稳坐段测 h≈316，伸展段≈291，躺卧段≈204-217。
@@ -43,14 +47,8 @@ TARGET_H = {
     'kiss': 630, 'wave': 630, 'type': 640,  # v100: kiss/wave坐姿档=sit 630; type含键盘整体bbox 640
 }
 # 重采样到引擎 ANIMS 声明帧数（引擎按 count 加载，帧数必须 1:1）
+# v-samoyed2: 清空——全态native全帧禁resample(速度/流畅度忠实视频)，帧数=extract实测回填ANIMS。
 RT_FRAMES = {
-    'idle': 101, 'eat': 34, 'bark': 57, 'sit': 63, 'roll': 47,   # roll=mochi灰底全窗口重生成认可值(golden旧121已废); 换宠物以引擎ANIMS实测为准
-    'dance': 57, 'beg': 56, 'bath': 57, 'stretch': 117,
-    'surprised': 45, 'play_dead': 68, 'sleep': 51, 'lick': 54,
-    'happy': 121, 'pet': 107,  # v60: walk移出RT_FRAMES——双周期=2T+1原生帧恒等, 帧数随T自适应, 禁止重采样(会产生重复帧)
-    # v100: run移出RT_FRAMES——36原生帧resample 15=2.4:1抽帧+1T=0.81s短循环=用户报"卡/重复感"，改长循环原生帧
-    'kiss': 121, 'wave': 57, 'type': 49,  # v118: type裁稳定段49帧闭环(extract走find_loop_pair不resample)
-    # pet=107(golden认可值): ONESHOT态必须锁帧数保三处ANIMS一致; 源clean窗口≥107帧为轻微抽帧, <107帧为重复帧(一次性动作无感知)
 }
 ALL_STATES = ['idle', 'sit', 'eat', 'bark', 'happy', 'roll', 'dance',
               'beg', 'bath', 'lick', 'surprised', 'play_dead', 'sleep', 'stretch',
@@ -197,7 +195,9 @@ def cutout_frames(fps, state):
         print(f'  [cache invalid] _mats_{state} older than video, re-cutting', flush=True)
     os.makedirs(mats_dir, exist_ok=True)
     existing = sorted(glob.glob(os.path.join(mats_dir, 'm_*.png')))
-    if state == 'type':
+    # v-samoyed2: type改走isnet——新type.mp4为白底且isnet完整保留狗+键盘(探针对比:
+    # chroma白毛开洞/hybrid键盘右侧奶白残带, 均废)。chroma分支仅留作旧青底管线历史。
+    if state == 'type_chroma_legacy':
         # v102: 色距抠图保键盘; 旧isnet缓存必须强制重切
         marker = os.path.join(mats_dir, '_chroma_v119')
         if existing and not os.path.exists(marker):
@@ -209,7 +209,7 @@ def cutout_frames(fps, state):
         open(marker, 'w').close()
     if len(existing) >= len(fps):
         return existing
-    if state == 'type':
+    if state == 'type_chroma_legacy':
         mats = []
         for i, fp in enumerate(fps):
             outp = os.path.join(mats_dir, f'm_{i:04d}.png')
@@ -1061,34 +1061,15 @@ def process_state(name):
     fps = extract(name)
     if not fps:
         print(f'  SKIP: no mp4', flush=True); return
-    if name in ('roll', 'type'):
+    if name in ('roll_legacy_bluebg', 'type_legacy_bluebg'):
+        # v-samoyed2: 新批次全部白底视频——drop_whitebg会删光所有帧, 停用。
         fps = drop_whitebg(fps)
     mats = cutout_frames(fps, name)
-    if name in ('sleep', 'stretch'):
-        # 过渡视频不做面积过滤（躺/站面积差异大），取全部非边缘帧；
-        # sleep 开头正面站/坐过渡帧（奇怪后腿主体）必须用 _front_standing 剔除
-        ms = [alpha_metrics(m) for m in mats]
-        sel = [m for m, t in zip(mats, ms) if not t['edge'] and t['area'] > 1000]
-        front = [np.array(Image.open(m).convert('RGBA'))[:, :, 3] for m in sel]
-        nfront = sum(1 for a in front if _front_standing(a))
-        if nfront:
-            sel = [m for m, a in zip(sel, front) if not _front_standing(a)]
-            print(f'  transition: dropped {nfront} front-facing frames', flush=True)
-        # 清醒坐立帧剔除（认可版sleep起点h/w≈1.38，>1.40=清醒坐立非睡觉）:
-        ups = []
-        for m in sel:
-            a = np.array(Image.open(m).convert('RGBA'))[:, :, 3]
-            ys, xs = np.where(a > 30)
-            if len(xs) == 0:
-                ups.append(False); continue
-            h = ys.max() - ys.min() + 1; w = xs.max() - xs.min() + 1
-            ups.append(h / w > 1.40)
-        nup = sum(ups)
-        if nup and len(sel) - nup >= 24:
-            sel = [m for m, u in zip(sel, ups) if not u]
-            print(f'  transition: dropped {nup} upright-awake frames (h/w>1.40)', flush=True)
-        assert len(sel) >= 24, f'过滤后仅{len(sel)}帧, 视频需重生成'
-        print(f'  transition: kept {len(sel)}/{len(mats)}', flush=True)
+    if name in ('sleep_legacy_filter', 'stretch_legacy_filter'):
+        # v-samoyed2: 旧过滤(剔站立过渡帧)与"视频=动作"铁律冲突, 且过滤结果仅用于
+        # assert(sel随后被stabilize覆盖=死代码门)。新视频站→躺过渡是认可内容, 全窗保留;
+        # sleep的站→躺由引擎intro_frames播一次+躺卧段loop处理。
+        pass
     else:
         if name in ('walk', 'run'):
             if name == 'walk':
@@ -1173,68 +1154,20 @@ def process_state(name):
                 s, e = 0, len(mats)
                 print(f'  {name} full-window (chroma: edge-touch by design) {e - s} frames', flush=True)
             else:
-                s, e, nclean, ntot = clean_window(
-                    mats, bottom_ok=(name != 'beg'),   # beg 直立抬爪: 底触=脚出框裁切
-                    relax=(name == 'pet'),             # pet: 手臂伸出屏幕=有意设计
-                    extra_ok=([t and g for t, g in zip(tub_ok_flags(mats), gray_ok_flags(mats))]\
-                              if name == 'bath' else None))
-                print(f'  clean window [{s}:{e}] len={e-s} ({nclean}/{ntot} ok)', flush=True)
-            if name in PROFILE_STATES:
-                pw = posture_window(mats[s:e], mode=PROFILE_STATES[name])
-                if pw:
-                    s2, e2 = pw
-                    print(f'  profile window [{s + s2}:{s + e2}] len={e2 - s2} (side-facing selected)', flush=True)
-                    s, e = s + s2, s + e2
-            if name == 'dance':
-                # v80: 双腿直立门。根因: 源首尾正面四足段混入loop=用户报"6条腿"。
-                # 判别取证: 脚底20行带跨度/狗宽 gfrac——直立双后腿=0.14-0.19,
-                # 正面四足着地=0.47-0.71(前爪后爪底部分开)。6行脚带cluster在正面
-                # 站姿粘连成单cluster不可分, 弃用。gate: ar<1.15 且 gfrac<=0.35。
-                ups = []
-                for m in mats[s:e]:
-                    a = np.array(Image.open(m).convert('RGBA'))[:, :, 3]
-                    ys2, xs2 = np.where(a > 30)
-                    if len(xs2) < 100:
-                        ups.append(False); continue
-                    h2 = ys2.max() - ys2.min() + 1
-                    w2 = xs2.max() - xs2.min() + 1
-                    if w2 / h2 >= 1.15:
-                        ups.append(False); continue
-                    fband = (a > 30)[ys2.max() - 19:ys2.max() + 1, :]
-                    fxs = np.where(fband.any(0))[0]
-                    gfrac = (fxs.max() - fxs.min()) / w2 if len(fxs) else 1.0
-                    ups.append(gfrac <= 0.35)
-                runs, cur = [], []
-                for i2, u in enumerate(ups):
-                    if u:
-                        cur.append(i2)
-                    else:
-                        if cur:
-                            runs.append(cur)
-                        cur = []
-                if cur:
-                    runs.append(cur)
-                runs = [r for r in runs if len(r) >= 16]
-                if runs:
-                    rr = max(runs, key=len)
-                    s, e = s + rr[0], s + rr[-1] + 1
-                    print(f'  v80 dance 2leg gate [{s}:{e}] len={e-s} '
-                          f'({sum(ups)}/{len(ups)} upright2leg)', flush=True)
-                else:
-                    print('  v80 dance gate: no 16f 2leg run, keep full window', flush=True)
-            if name == 'idle':
-                # v75: 正面idle视频尾部混入play-bow/趴卧段（idle应全程站立, h/w≈1.2;
-                # 趴卧h/w≈0.6-0.85）→ 从尾部裁除非站立帧。
-                while e > s + 24:
-                    a = np.array(Image.open(mats[e - 1]).convert('RGBA'))[:, :, 3]
-                    ys, xs = np.where(a > 30)
-                    if len(xs) == 0:
-                        e -= 1; continue
-                    if (ys.max() - ys.min() + 1) / (xs.max() - xs.min() + 1) < 0.95:
-                        e -= 1
-                    else:
-                        break
-                print(f'  idle crouch-trim → [{s}:{e}]', flush=True)
+                # v-samoyed2: 用户铁律"宠物动作=源视频动作, 认可的是源视频"——
+                # 旧 clean_window/profile_window/crouch-trim 选窗启发式会裁掉
+                # 认可视频内容(idle丢51帧/sit丢54帧)。新批次视频经目检均为单一
+                # 完整动作(含站立→动作自然过渡), 全窗保留; 尺寸一致性由
+                # TARGET_H/sleep_scale 保证, 漂移由 treadmill 去除。
+                s, e = 0, len(mats)
+                print(f'  {name} full-window (user-approved video = action, no trim) {e - s} frames', flush=True)
+            if name == 'dance_legacy_looppet':
+                # v-samoyed2: dance已改ONESHOT全窗一次性(无loop=无混段根因),
+                # 双腿门纯删站立过渡段=删认可内容, 停用。
+                pass
+            if name == 'idle_legacy_crouchtrim':
+                # v-samoyed2: 全窗铁律; 新idle视频无趴卧段, crouch-trim停用。
+                pass
         if e - s < 4:
             print('  TOO FEW, skip', flush=True); return
         if name == 'kiss':
@@ -1257,22 +1190,29 @@ def process_state(name):
             sel = stabilize_h_mats(mats)[s:e]
     if name in ('walk', 'run'):
         sel = treadmill_mats(sel, name)   # v57: normalize前对齐→union-bbox收缩到狗本体→scale由target_h决定 (v58: 非破坏性)
+    elif name == 'idle':
+        # v-samoyed2: 新idle视频有慢速左漂(质心943→225≈260px), 直接loop=
+        # 屏上每5s瞬移~180px。linear treadmill只去净位移, 微动/朝向/踏步振荡全保留。
+        sel = treadmill_mats(sel, name)
     elif name == 'roll':
         # v76: roll滚动时左右非线性徘徊(质心p2p=784px)→union-bbox宽1436→宽度钳制
         # 压死scale→仅473/500。中值去趋势W=25分离徘徊(趋势)与滚动摆动(残差90px保留)
-        # →union_w=656不受钳制→精确恢复500。
+        # →union_w=656不受钳制→精确恢复500。v-samoyed2保留: 水平去趋势不删帧、
+        # 站→躺过渡为垂直分量不受影响, 且消除loop首尾水平瞬移。
         sel = treadmill_mats(sel, name, mode='median', win=25)
     frames = normalize_frames(sel, TARGET_H.get(name))
     if not frames:
         print('  normalize failed', flush=True); return
     frames = refit_bounds(frames)      # 修 stabilize roll 漂移导致的边界截断（walk左/run右）
-    if name == 'roll':
+    if name == 'roll_legacy_graybg':
+        # v-samoyed2: 新批次白底视频无发青, warm_balance会把roll单独调暖黄=与其他态色调不一致, 停用。
         frames = warm_balance_frames(frames)   # v107: 发青修复(白点增益→idle认可暖白)
         frames = roll_perframe_scale(frames)   # v101: 站/躺逐帧锚定对齐主体档
     if name == 'sleep':
         frames = sleep_scale_frames(frames)
-    if name == 'beg':
-        frames = dedup_still(frames)   # 微动作状态剔连续静止帧，ping-pong静止感减半
+    if name == 'beg_legacy_dedup':
+        # v-samoyed2: ONESHOT全窗一次性=无ping-pong静止感根因, dedup纯删静止帧=节奏加速≠视频, 停用。
+        pass
     if name in PINGPONG:
         seq = frames + frames[-2:0:-1]
     elif name in ONESHOT:

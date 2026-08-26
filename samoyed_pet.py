@@ -65,27 +65,31 @@ ANIMS = {
     #   旧配置遗留v8-era压缩时长（1.9~4.9s不等），导致动作忽快忽慢（相对源速1.2~2.7倍）。
     #   frame_ms 一律恢复为 源时长/帧数，动作速度=Agnes生成时的真实动物速度。
     #   walk/run(步态循环+腿装配)、eat(定制碗)、sleep(10s含intro)、lick(双周期定制)为认可版，保持。
-    'idle':      ('idle',      101, 50,  True,  0),   # 5.05s = 源5.04s
-    'walk':      ('walk',      28, 70,  True,  0),   # v61: 修复"重复+抖动": v60尾部振荡衰减帧(351px)致每循环垂直pop, 裁窗口src[3..57]+stride2+最小差wrap旋转→28帧 fd=19.4(认可版labrador=21)/seam16.0 ratio=0.83(认可版0.83)/maxHJ=9.1%(认可版6.9) @70ms=1.96s(1.1s/步态周期≈原生1.22s)。纯真实帧无重采样
-    'run':       ('run',       88, 42,  True,  0),   # v100铁律: 长循环原生帧@42ms≈3.7s(find_loop_pair), 禁旧15帧短循环重采样=卡顿/重复感; 帧数随新宠物自适应回填
-    'eat':       ('eat',       34, 96,  True,  0),    # 定制认可版(碗烤入),不升帧
-    'bark':      ('bark',      57, 90,  True,  0),    # 5.13s = 源5.04s
-    'sleep':     ('sleep',     51, 110, True,  39),   # v50 P3: 同源重生成(完全侧躺四脚摊开) 39 intro+12 loop
-    'sit':       ('sit',       63, 80,  True,  22),   # 5.04s = 源5.04s
-    # v46: 素材含2舔毛周期→"循环两次"感。重构54帧=0-7坐下intro(播一次)+
-    #   8-31单舔毛周期正播+30-9倒播ping-pong(抬回=无缝循环)，duration配套4.0
-    'lick':      ('lick',      54, 74,  True,  8),
-    'happy':     ('happy',     121, 42, False, 0),  # v56: 24fps原生全帧(原62@82ms=12fps掉帧+模糊)
-    'roll':      ('roll',      47, 42, False, 0),    # v107: 裁纯躺滚段消站→躺"从小变大", 帧数与extract RT_FRAMES/deploy三处1:1; 若新宠物全帧重生成未裁则用121
-    'dance':     ('dance',     57, 90,  True,  0),    # 5.13s = 源5.04s
-    'stretch':   ('stretch',   117, 43, False, 0),    # 5.03s = 源5.04s
-    'beg':       ('beg',       56, 91,  True,  0),    # 5.10s = 源5.04s
-    'bath':      ('bath',      57, 90,  True,  0),    # 5.13s = 源5.04s
-    'surprised': ('surprised', 45, 114, False, 0),    # 5.13s = 源5.04s 一次性
-    'play_dead': ('play_dead', 68, 75,  False, 0),    # 5.10s = 源5.04s 一次性
-    'pet':       ('pet',       107, 42, False, 0),    # v57: 独立摸摸头互动(人手抚摸+小狗享受) 24fps原生 一次性 4.5s
-    'potty_run': ('run',       88, 42,  True,  0),  # 复用run帧，帧数必须与run一致
-    'potty':     ('sit',       63, 80,  True,  22),   # 复用sit帧(同v53)
+    # v-samoyed2 全量回填: 20状态源视频=用户肉眼验收动作, 全态native 24fps全窗。
+    #   帧数=extract实测(121全窗/walk44/run87步态闭环), frame_ms=42(24fps),
+    #   loop/intro按detect_intro.py实测: 有站立→姿态过渡且loop段过短者改一次性(播放一遍=视频)。
+    'idle':      ('idle',      121, 42,  True,  0),   # 全窗+linear treadmill去漂; 微动loop
+    'walk':      ('walk',      44, 42,  True,  0),   # 步态闭环find_loop_pair
+    'run':       ('run',       87, 42,  True,  0),   # 步态长循环闭环
+    'eat':       ('eat',       121, 42,  False, 0),  # 站→走近→趴吃 播放一遍=视频(duration释放)
+    'bark':      ('bark',      121, 42,  True,  0),
+    'sleep':     ('sleep',     121, 42,  False, 0),  # 站→躺播放一遍, 钳末帧=持续睡眠
+    'sit':       ('sit',       121, 42,  True,  0),  # 视频起点即坐姿, 微动loop
+    'lick':      ('lick',      121, 42,  True,  71), # 0-70站→坐过渡播一次, 71-120坐姿舔毛loop
+    'happy':     ('happy',     121, 42, False, 0),
+    'roll':      ('roll',      121, 42, False, 0),   # 全窗一次性(站→滚→回)
+    'dance':     ('dance',     121, 42,  True,  0),
+    'stretch':   ('stretch',   121, 42, False, 0),
+    'beg':       ('beg',       121, 42,  True,  0),
+    'bath':      ('bath',      121, 42,  True,  0),  # 视频起点即入盆, 洗澡loop
+    'surprised': ('surprised', 121, 42, False, 0),
+    'play_dead': ('play_dead', 121, 42,  False, 0),
+    'pet':       ('pet',       121, 42, False, 0),
+    'kiss':      ('kiss',      121, 42, False, 0),
+    'wave':      ('wave',      121, 42, False, 0),
+    'type':      ('type',      121, 42, True,  0),   # 整视频敲键loop
+    'potty_run': ('run',       87, 42,  True,  0),  # 复用run帧，帧数必须与run一致
+    'potty':     ('sit',       121, 42,  True,  0),  # 复用sit帧
 }
 
 # 侧面视角状态（walk/run素材本身朝右，向左移动时需镜像；镜像方向由self.flipped=facing<0控制）
@@ -449,12 +453,14 @@ class SpriteBank:
     # calm六态基准统一560）。walk=认可版保持1024²方画布原路径。
     TIGHT = {'idle', 'run', 'eat', 'bark', 'sleep', 'sit', 'lick', 'happy',
              'roll', 'dance', 'stretch', 'beg', 'bath', 'surprised',
-             'play_dead', 'pet'}
+             'play_dead', 'pet',
+             'kiss', 'wave', 'type'}   # v-samoyed2: 三新态tight画布(与normalize方画布一致)
     # v64: 一次性/低频状态懒加载——启动不预载，首次set_state触发后台异步装载，
     # 常驻集=交互高频七态，内存峰值大幅下降。
     # v67: dance/beg/bath 移入懒集（常驻-28MB纹理），首次触发走同步快路径。
     LAZY = {'happy', 'roll', 'stretch', 'pet', 'play_dead', 'surprised',
-            'sleep', 'dance', 'beg', 'bath'}
+            'sleep', 'dance', 'beg', 'bath',
+            'kiss', 'wave', 'type'}   # v-samoyed2: 三新态低频→懒加载省内存
     ASSET_SCALE = 1.05  # 纹理长边=屏上设备像素长边×1.05（1:1锐度+微余量，内存最小化）
 
     def __init__(self):
@@ -1467,7 +1473,9 @@ class PetWindow(QWidget):
             del self.state_duration[st]
             # v10: 补上'eat'——喂食(duration=6.56)到期后旧代码不转idle，
             #      狗一直循环吃直到ai_timer偶然到期(最长多卡11秒)
-            if st in ('happy', 'roll', 'dance', 'bark', 'lick', 'stretch', 'beg', 'bath', 'eat'):
+            if st in ('happy', 'roll', 'dance', 'bark', 'lick', 'stretch', 'beg', 'bath', 'eat',
+                      'pet', 'kiss', 'wave', 'surprised', 'play_dead'):
+                # v-samoyed2: 补全一次性态到期释放(旧版pet漏列=末帧冻结)
                 self.set_state('idle')
                 return
 
@@ -1926,6 +1934,10 @@ class PetWindow(QWidget):
         trick_menu.add_item('lick', '舔毛')
         trick_menu.add_item('beg', '作揖')
         trick_menu.add_item('bath', '洗澡')
+        # v-samoyed2: 三新动作(用户验收视频批次含 kiss/wave/type)
+        trick_menu.add_item('kiss', '亲亲')
+        trick_menu.add_item('wave', '挥手')
+        trick_menu.add_item('type', '敲键盘')
         menu.add_sub('🎪 表演', trick_menu)
         menu.add_sep()
         size_menu = RoundedMenu(self)
@@ -1980,6 +1992,12 @@ class PetWindow(QWidget):
             self.set_state('beg', duration=5.1)
         elif action == 'bath':
             self.set_state('bath', duration=10.3)
+        elif action == 'kiss':
+            self.set_state('kiss', duration=5.1)
+        elif action == 'wave':
+            self.set_state('wave', duration=5.1)
+        elif action == 'type':
+            self.set_state('type', duration=10.2)
         elif action == 'mode_taskbar':
             self.mode = 'taskbar'
             sg = QApplication.primaryScreen().geometry()
