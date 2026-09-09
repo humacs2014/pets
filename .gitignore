@@ -1,0 +1,51 @@
+# Build artifacts
+build/
+dist/
+__pycache__/
+*.pyc
+
+# Intermediate directories
+_mats*/
+_raw*/
+_tread_tmp*/
+frames/
+_probe/
+_audit/
+_calib/
+_archive/
+
+# Debug files
+dbg_*
+debug_*
+_*.log
+*.log
+_*.txt
+_*.out
+_*.py
+_*.png
+_ben2_results/
+_test_*/
+_verify/
+_walk_check/
+_walk_sample/
+
+# Video cache
+videos/*.mp4
+
+# Backup directories
+assets_backup_*/
+assets_after_*/
+backup_*/
+frames_backup/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Keys
+keyhex.txt
+
+# Misc
+*.ico
+zoom_config.json
+MAC版本/
