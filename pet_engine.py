@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 """
-桌面宠物混合渲染引擎（golden v71 最终验证版模板，换宠物复制本文件为 <name>_pet.py）
+Desktop Pet Hybrid Rendering Engine (golden v71 final template)
 =========================================================
-换宠物只改 CONFIG 四值（PET_NAME/PET_NAME_ASCII/BARK_TEXT/EAT_TEXT）+ ANIMS 字典
-（帧数与 extract RT_FRAMES / deploy ANIMS 三处 1:1 同步）。
-核心原理（与竞品Deskpet Dog完全一致）：
-  1. 原版金毛犬精灵图作为基底（保留原版神韵）
-  2. 实时程序化叠加效果，让静态图"活"起来：
-     - 呼吸层：裁切胸部区域，以0.9透明度放大1.5-2.5%重绘（竞品drawIdleSprite技术）
-     - 待机浮动：整体Y轴正弦微浮
-     - 行走摇摆：±2°旋转 + 弹跳，与步伐帧同步
-     - 打滚：单帧精灵做360°连续旋转（纯程序化）
-     - 落地挤压/拉伸（squash & stretch）
-     - 拖拽倾斜：随速度旋转
-     - 方向翻转：scale(-1,1)镜像
-  3. 60fps连续渲染，帧动画+变换叠加
-  4. 完整行为AI：任务栏漫步/桌面漫游/逗弄追鼠标/如厕/睡觉
-  5. 物理系统：惯性拖拽+抛掷+重力弹跳
-  6. 粒子特效：爱心/Zzz/臭味/星星/食物碎屑/气泡文字
+CONFIG: PET_NAME / PET_NAME_ASCII / BARK_TEXT / EAT_TEXT + ANIMS dict
+Core principles (same as Deskpet Dog competitor):
+  1. Original sprite frames as base (preserve original charm)
+  2. Real-time procedural overlays:
+     - Breathing: crop chest region, redraw at 0.9 opacity + 1.5-2.5% scale
+     - Idle bob: sinusoidal Y-axis micro-float
+     - Walk sway: +/-2deg rotation + bounce, synced to gait frames
+     - Roll: 360deg continuous rotation (procedural)
+     - Landing squash & stretch
+     - Drag tilt: rotate by velocity
+     - Direction flip: scale(-1,1) mirror
+  3. 60fps continuous rendering, frame animation + transform overlays
+  4. Full behavior AI: taskbar roam / desktop fixed / tease chase / potty / sleep
+  5. Physics: inertial drag + throw + gravity bounce
+  6. Particle FX: hearts / Zzz / stink / stars / crumbs / speech bubbles
 """
 
 import sys
@@ -27,6 +26,14 @@ import time
 import os
 import json
 
+# PyInstaller onefile fix: Qt5 needs to find platforms plugin in temp dir
+if getattr(sys, 'frozen', False):
+    _base = sys._MEIPASS
+    os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = os.path.join(_base, 'PyQt5', 'Qt5', 'plugins', 'platforms')
+    # Also add _base to DLL search path
+    if hasattr(os, 'add_dll_directory'):
+        os.add_dll_directory(_base)
+
 from PyQt5.QtWidgets import QApplication, QWidget
 from PyQt5.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QRect, QThread, QEventLoop, QEvent
 from PyQt5.QtGui import (
@@ -34,17 +41,17 @@ from PyQt5.QtGui import (
     QImage, QImageReader, QCursor, QRadialGradient, QLinearGradient
 )
 
-# 跨平台中文字体：macOS无微软雅黑，回退到苹方
-_UI_FONT = 'PingFang SC' if sys.platform == 'darwin' else 'Microsoft YaHei'
+# Cross-platform font: macOS has no Microsoft YaHei, fallback to system sans
+_UI_FONT = 'Helvetica' if sys.platform == 'darwin' else 'Arial'
 
-# ═══ v66 参数化（换宠物改这里）═══
-PET_NAME = '金毛背心宠物'            # 中文显示名（窗口前缀/单例提示）
-PET_NAME_ASCII = 'GoldenVestPet'   # 英文名（窗口标题/单例mutex）
-BARK_TEXT, EAT_TEXT = '汪!', '好吃!'   # 气泡文字
+# ═══ v66 parameterization (change for new pet) ═══
+PET_NAME = 'Golden Vest Puppy'        # Display name
+PET_NAME_ASCII = 'GoldenVestPet'       # ASCII name (window title / mutex)
+BARK_TEXT, EAT_TEXT = 'Woof!', 'Yummy!'   # Bubble text
 
 
 def asset_path():
-    """资源路径（兼容PyInstaller打包）"""
+    """Resource path (PyInstaller compatible)"""
     if getattr(sys, 'frozen', False):
         base = sys._MEIPASS
     else:
@@ -53,51 +60,52 @@ def asset_path():
 
 
 # ═══════════════════════════════════════════════════════════
-#  动画配置 — 每个状态的帧序列与帧时长
+#  Animation config  --  frame sequence and duration per state
 # ═══════════════════════════════════════════════════════════
 ANIMS = {
     # state: (prefix, frame_count, frame_ms, loop, intro_frames)
-    # 所有动作均121帧，frame_ms=42对应视频原始24fps
-    'idle':      ('idle',      121, 42,  True,  0),
-    'walk':      ('walk',      18, 70,  True,  0),  # 帧66-100 stride2, 完美步态循环(首尾比1.04)
+    # frame_ms: source is 24fps=42ms. Low-motion states use 83ms(12fps) to cut CPU/gpu load;
+    # high-motion states keep 42ms for smoothness.
+    'idle':      ('idle',      30, 83,  True,  0),   # breathing only, 12fps enough
+    'walk':      ('walk',      119, 42,  True,  0),   # gait needs 24fps
     'run':       ('run',       121, 42,  True,  0),
-    'eat':       ('eat',       121, 42,  True,  0),
-    'bark':      ('bark',      121, 42,  True,  0),
-    'sleep':     ('sleep',     121, 42,  True,  0),
-    'sit':       ('sit',       121, 42,  True,  0),
-    'lick':      ('lick',      121, 42,  True,  0),
-    'happy':     ('happy',     121, 42,  False, 0),
-    'roll':      ('roll',      121, 42,  False, 0),
-    'dance':     ('dance',     121, 42,  True,  0),
-    'stretch':   ('stretch',   121, 42,  False, 0),
-    'beg':       ('beg',       121, 42,  True,  0),
-    'bath':      ('bath',      121, 42,  True, 5),   # intro=5: 前5帧侧身站立准备只播一次，第5帧起循环浴盆
-    'surprised': ('surprised', 121, 42,  True,  0),
-    'play_dead': ('play_dead', 121, 42,  False, 0),
-    'pet':       ('pet',       121, 42,  False, 0),
-    'kiss':      ('kiss',      121, 42,  False, 0),
-    'wave':      ('wave',      121, 42,  True,  0),
-    'type':      ('type',      121, 42,  True,  0),
+    'eat':       ('eat',       121, 83,  True,  0),   # slow chewing, 12fps fine
+    'bark':      ('bark',      121, 42,  True,  0),   # snappy action
+    'sleep':     ('sleep',     30, 83,  True,  0),   # barely moves
+    'sit':       ('sit',       30, 83,  True,  0),   # static sit
+    'lick':      ('lick',      40, 83,  True,  0),   # slow grooming
+    'happy':     ('happy',     121, 42,  False, 0),   # energetic jump
+    'roll':      ('roll',      121, 42,  False, 0),   # fast roll
+    'dance':     ('dance',     121, 42,  True,  0),   # bouncy
+    'stretch':   ('stretch',   60, 83,  False, 0),   # slow stretch
+    'beg':       ('beg',       60, 83,  True,  0),   # slow beg
+    'bath':      ('bath',      30, 83,  True, 0),    # slow shake
+    'surprised': ('surprised', 121, 42,  True,  0),   # snappy startle
+    'play_dead': ('play_dead', 60, 83,  False, 0),   # slow flop
+    'pet':       ('pet',       60, 83,  False, 0),   # dog sitting still
+    'kiss':      ('kiss',      121, 42,  False, 0),   # walking forward
+    'wave':      ('wave',      121, 42,  True,  0),   # paw wave
+    'type':      ('type',      30, 83,  True,  0),   # slow typing
     'potty_run': ('run',       121, 42,  True,  0),
-    'potty':     ('sit',       121, 42,  True,  0),
+    'potty':     ('sit',       30, 83,  True,  0),
 }
 
-# 侧面视角状态（walk/run素材本身朝右，向左移动时需镜像；镜像方向由self.flipped=facing<0控制）
+# Side-view states (walk/run face right by default, mirror when moving left; mirror direction controlled by self.flipped=facing<0)
 LEFT_FACING = {'walk', 'run'}
 
-CANVAS = 320          # 窗口尺寸（320>250+挤压/旋转溢出余量，杜绝变换裁切）
-DRAW_SIZE = 250       # 精灵绘制尺寸
-GROUND_PAD = 14       # 脚底留白
+CANVAS = 320          # Window size (320>250+squash/rotation overflow margin, prevents transform clipping)
+DRAW_SIZE = 250       # Sprite draw size
+GROUND_PAD = 14       # Foot bottom padding
 
 # ═══════════════════════════════════════════════════════════
-#  v25 (P9): 全局缩放 — 菜单"大小"可放大/缩小/重置，比例持久化
+#  v25 (P9): Global zoom  --  menu "Size" scale up/down/reset, ratio persisted
 # ═══════════════════════════════════════════════════════════
 ZOOM_DEFAULT = 1.0
 ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 0.5, 2.5, 0.25
 
 
 def zoom_cfg_path():
-    """缩放配置文件位置（打包后在exe同目录）"""
+    """Zoom config file location (next to exe after packaging)"""
     if getattr(sys, 'frozen', False):
         return os.path.join(os.path.dirname(sys.executable), 'zoom_config.json')
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'zoom_config.json')
@@ -120,9 +128,9 @@ def save_zoom(zoom):
 
 
 def _target_dpr(widget=None):
-    """v2 高分辨率: 精灵纹理尺寸必须乘 devicePixelRatio——否则 Retina(dpr=2)
-    上 250px 逻辑尺寸的纹理被拉伸到 500 设备像素=恒定2倍放大模糊
-    （Mac/高分屏"粗糙"的头号根因）。跨屏时取窗口所在屏的 dpr。"""
+    """v2 highresolution: Sprite texture size must multiply by devicePixelRatio  --  otherwise Retina (dpr=2)
+    250px logical texture stretched to 500 device pixels = constant 2x blur
+    (#1 cause of Mac/HiDPI "roughness"). Uses dpr of the screen the window is on."""
     scr = None
     if widget is not None and widget.windowHandle() is not None:
         scr = widget.windowHandle().screen()
@@ -140,9 +148,9 @@ def _target_dpr(widget=None):
 
 
 # ═══════════════════════════════════════════════════════════
-#  v67: 自绘圆角菜单 —— 根治 macOS QMenu 四角白角
-#  QMenu+WA_TranslucentBackground 在 macOS 下圆角外仍渲染白底；
-#  改用与主窗口同机制的 QPainterPath 自绘 popup，两平台像素级一致。
+#  v67: Self-drawn rounded menu  --  fixes macOS QMenu white corners
+#  QMenu+WA_TranslucentBackground still renders white outside rounded corners on macOS;
+#  Use QPainterPath self-drawn popup same as main window, pixel-identical on both platforms.
 # ═══════════════════════════════════════════════════════════
 _MENU_BG = QColor('#2b2b3a')
 _MENU_FG = QColor('#e8e8f0')
@@ -154,13 +162,13 @@ _MENU_PAD = 8
 
 
 class RoundedMenu(QWidget):
-    """自绘 popup 菜单：QPainterPath 圆角绘制，支持分隔线与 hover 展开子菜单。
-    exec_menu(global_pos) -> 选中项 key 或 None。"""
+    """Self-drawn popup menu: QPainterPath rounded corners, supports separators and hover-expand submenus.
+    exec_menu(global_pos) -> selected item key or None."""
 
     def __init__(self, parent=None):
-        # v67: 不用 Qt.Popup——主/子菜单两个独立 Popup 在 Windows 下鼠标捕获
-        # 冲突（子菜单展开后主菜单收不到事件）。改 Tool+顶层+应用级
-        # eventFilter 统一路由鼠标， outside 点击/Escape 自行关闭。
+        # v67: Don't use Qt.Popup  --  two independent Popups for main/submenu cause mouse capture
+        # conflict on Windows (submenu opens but main menu stops receiving events). Use Tool+toplevel+app-level
+        # eventFilter for unified mouse routing; outside click/Escape self-closes.
         super().__init__(parent, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.items = []  # ('item',key,text) / ('sep',) / ('sub',text,RoundedMenu)
@@ -174,7 +182,7 @@ class RoundedMenu(QWidget):
         self._font = QFont(_UI_FONT)
         self._font.setPixelSize(13)
 
-    # ---- 构建 ----
+    # ---- Build ----
     def add_item(self, key, text):
         self.items.append(('item', key, text))
 
@@ -182,13 +190,13 @@ class RoundedMenu(QWidget):
         self.items.append(('sep',))
 
     def add_sub(self, text, submenu):
-        # 子菜单保持独立 top-level popup（级联菜单正确形态）；
-        # 不可 setParent 到主菜单——否则 render/grab 的 DrawChildren
-        # 会连带渲染未布局的子弹出窗口导致崩溃。
+        # Submenu stays as independent top-level popup (correct cascading menu form);
+        # Cannot setParent to main menu  --  otherwise render/grab's DrawChildren
+        # would also render unlayouted child popups causing crash.
         submenu.root = self.root
         self.items.append(('sub', text, submenu))
 
-    # ---- 布局/定位 ----
+    # ---- Layout/Positioning ----
     def _layout(self):
         fm = QFontMetrics(self._font)
         w = 0
@@ -198,7 +206,7 @@ class RoundedMenu(QWidget):
             # item=('item',key,text) / sub=('sub',text,menu)
             text = it[1] if it[0] == 'sub' else it[2]
             w = max(w, fm.horizontalAdvance(text))
-        self._w = w + _MENU_PAD * 2 + 58  # 图标+文本+子菜单箭头留白
+        self._w = w + _MENU_PAD * 2 + 58  # icon+text+submenu arrow padding
         y = _MENU_PAD
         self._rects = []
         for it in self.items:
@@ -218,14 +226,14 @@ class RoundedMenu(QWidget):
         return max(sg.left(), x), max(sg.top(), y)
 
     def exec_menu(self, pos):
-        """模态显示于全局坐标 pos，返回选中项 key（None=取消）"""
+        """Modal display at global pos, returns selected item key (None=cancelled)"""
         self._layout()
         self._result = None
         self.move(*self._clamp(pos.x(), pos.y(), pos))
         self.show()
         self.raise_()
         self.activateWindow()
-        # 应用级滤镜：主/子菜单统一接收鼠标路由（Qt.Popup 双窗口捕获冲突的根治）
+        # App-level filter: unified mouse routing for main/submenu (fix for Qt.Popup dual-window capture conflict)
         QApplication.instance().installEventFilter(self)
         self._loop = QEventLoop()
         self._loop.exec_()
@@ -242,13 +250,13 @@ class RoundedMenu(QWidget):
             elif self.geometry().contains(gp):
                 tgt = self
             else:
-                # 缝隙带（主/子菜单间2px接缝）或菜单外：不扰动 hover，避免闪
+                # Gap zone (2px seam between main/submenu) or outside menu: don't disturb hover, avoid flicker
                 return False
             if tgt.hover_idx != tgt._idx_at(gp):
                 ni = tgt._idx_at(gp)
                 if ni < 0 and tgt.hover_idx >= 0:
-                    # v68: pad边条/分隔线带不扰动当前hover（高亮保持），
-                    # 避免穿越间隙时高亮闪失、且杜绝任何连带关闭路径
+                    # v68: Pad border/separator band doesn't disturb current hover (highlight held),
+                    # avoids highlight flicker when crossing gaps, and eliminates any cascade-close path
                     return False
                 tgt.hover_idx = ni
                 tgt.update()
@@ -261,12 +269,12 @@ class RoundedMenu(QWidget):
                 elif self.geometry().contains(gp):
                     self._press_at(gp)
                 elif not isinstance(obj, RoundedMenu):
-                    self.close_all()  # 菜单外点击 = 取消（缝隙带点击不关）
+                    self.close_all()  # Click outside menu = cancel (gap zone clicks don't close)
         elif t == QEvent.KeyPress and ev.key() == Qt.Key_Escape:
             self.close_all()
         return False
 
-    # ---- 子菜单 ----
+    # ---- Submenu ----
     def _sync_submenu(self):
         it = self.items[self.hover_idx] if 0 <= self.hover_idx < len(self.items) else None
         if it is not None and it[0] == 'sub':
@@ -285,9 +293,9 @@ class RoundedMenu(QWidget):
                 sub.move(*sub._clamp(x, y, gp))
                 sub.show()
         elif it is not None and self.sub_open is not None:
-            # v68: 只有hover落到"另一个明确条目"才关子菜单。hover=-1（pad边条/
-            # 分隔线）保持子菜单——进入子菜单的必经之路是主菜单右侧8px pad带，
-            # 旧逻辑hover=-1即关，鼠标慢速穿越必收（"有时自动收起"根因）。
+            # v68: only close submenu when hover lands on "another clear item". hover=-1 (pad border/
+            # separator) keeps submenu -- path to submenu requires crossing 8px pad band on main menu right,
+            # old logic closed on hover=-1, slow mouse crossing always triggers (cause of "sometimes auto-collapses").
             self._close_submenu()
 
     def _close_submenu(self):
@@ -299,7 +307,7 @@ class RoundedMenu(QWidget):
         self._close_submenu()
         self.close()
 
-    # ---- 交互 ----
+    # ---- Interaction ----
     def _idx_at(self, global_pos):
         lp = self.mapFromGlobal(global_pos)
         for i, r in enumerate(self._rects):
@@ -313,7 +321,7 @@ class RoundedMenu(QWidget):
             return
         it = self.items[idx]
         if it[0] == 'sub':
-            return  # 子菜单项由 hover 展开
+            return  # Submenu items expand on hover
         self.root._result = it[1]
         self.root.close_all()
 
@@ -323,7 +331,7 @@ class RoundedMenu(QWidget):
             self._loop.quit()
         super().closeEvent(e)
 
-    # ---- 绘制 ----
+    # ---- Drawing ----
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -347,43 +355,43 @@ class RoundedMenu(QWidget):
             p.setPen(_MENU_FG)
             p.drawText(r.adjusted(12, 0, -12, 0), Qt.AlignVCenter | Qt.AlignLeft, text)
             if it[0] == 'sub':
-                p.drawText(r.adjusted(-14, 0, -6, 0), Qt.AlignVCenter | Qt.AlignRight, '▶')
+                p.drawText(r.adjusted(-14, 0, -6, 0), Qt.AlignVCenter | Qt.AlignRight, '>')
         p.end()
 
 # ═══════════════════════════════════════════════════════════
-#  v24: LEG_RIG 清空 —— 逐帧视觉判定证明:
-#  1) walk 的 v13 帧本身自带真实交叉步态(前后腿角色逐帧互换、完整walk cycle)，
-#     切腿钟摆把腿对切成刚性整块同步摆动，反而把交叉步态破坏成"四条腿一起摇摆"。
-#  2) run 的旧帧腿部完全冻结(8帧同一伸展姿势)，rig只能造成成对摇摆。
-#  正确路线: walk纯帧播放; run用Agnes重新生成真实伸缩循环视频后抽帧(见agnes_test)。
-#  历史校准几何备份在 test_p2_rigcal_v13.py 输出中，如需再启用rig可参考。
+#  v24: LEG_RIG cleared  --  per-frame visual analysis proves:
+#  1) walk v13 frames already have authentic crossing gait (front/rear legs swap per frame, full walk cycle),
+#     leg-swing pendulum rigidly swings legs in sync, destroying crossing gait into "all four legs swaying together".
+#  2) run old frames have frozen legs (8 frames same pose), rig only causes paired swaying.
+#  Correct approach: walk plays frames directly; run regenerated with Agnes real gallop loop video then extracted (see agnes_test).
+#  Historical rig calibration backup in test_p2_rigcal_v13.py output, reference if re-enabling rig.
 # ═══════════════════════════════════════════════════════════
 LEG_RIG = {
-    # v24: 空——纯帧播放。walk帧自带交叉步态；run帧重新生成后同样纯帧播放。
+    # v24: Empty  --  pure frame playback. walk frames have built-in crossing gait; run frames also pure playback after regeneration.
 }
-RIG_BODY_OVERLAP = 12  # 身体块向下越过切线的行数（覆盖接缝）——v19: 4→12，腿旋转时腹下不露洞
-RIG_LEG_TOP = 8        # 腿块从切线上方N行开始（与身体重叠）——v19: 2→8 加深重叠
-RIG_FADE = 12          # 腿块顶部N行alpha线性渐隐（接缝融合）——v19: 6→12 消除硬切线
+RIG_BODY_OVERLAP = 12  # Body block extends below cut line rows (covers seam)  --  v19: 4->12, no gap under belly during leg rotation
+RIG_LEG_TOP = 8        # Leg block starts N rows above cut line (overlaps body)  --  v19: 2->8 deeper overlap
+RIG_FADE = 12          # Leg block top N rows alpha linear fade (seam blending)  --  v19: 6->12 eliminates hard cut line
 
 
 def _approach(v, target, rate, dt):
-    """将v以rate的速率平滑趋近target（用于速度缓动）"""
+    """Smoothly approach target at rate v (for velocity easing)"""
     if v < target:
         return min(v + rate * dt, target)
     return max(v - rate * dt, target)
 
 
 # ═══════════════════════════════════════════════════════════
-#  精灵库 — 加载/缩放/镜像预处理
+#  Sprite bank  --  load/scale/mirror preprocessing
 # ═══════════════════════════════════════════════════════════
-_BODY_BOTTOM_CACHE = {}   # v66: cacheKey→底缘行（像素扫描结果缓存）
-_BODY_BOTTOM_CACHE2 = {}  # v66: cacheKey→内容底边行（lift扫描缓存）
+_BODY_BOTTOM_CACHE = {}   # v66: cacheKey -> bottom row (pixel scan result cache)
+_BODY_BOTTOM_CACHE2 = {}  # v66: cacheKey -> content bottom row (lift scan cache)
 
 
 def _crash_log(tag):
-    """v69-fix: QThread 未捕获异常在 C++ 层 std::terminate——无 traceback/无事件日志/
-    无 crash.log，进程静默死亡（"执行动作后自动关闭"根因）。此函数供线程 run() 的
-    兜底 except 写日志，死亡降级为"该动作空白但进程存活"。"""
+    """v69-fix: QThread uncaught exception triggers C++ std::terminate  --  no traceback/no event log/
+    no crash.log, process dies silently (cause of "auto-closes after action"). This function is for thread run()
+    fallback except to write log, degrading death to "action blank but process alive"."""
     import traceback
     try:
         if getattr(sys, 'frozen', False):
@@ -397,12 +405,12 @@ def _crash_log(tag):
         pass
 
 
-_crash_fh = None  # faulthandler 文件句柄全局持有（防GC关闭）
+_crash_fh = None  # faulthandler file handle held globally (prevent GC closing)
 
 
 class _LoadThread(QThread):
-    """v48: 后台重建精灵——主线程同步load()会卡死UI（579帧×纯Python像素扫描）。
-    线程内构建完整bank数据，finished后主线程原子swap，渲染期间不半态。"""
+    """v48: Background sprite rebuild -- main thread sync load() freezes UI (579 frames x pure Python pixel scan).
+    Build complete bank data in thread, atomic swap on finished in main thread, no half-state during rendering."""
     def __init__(self, draw_size):
         super().__init__()
         self.draw_size = draw_size
@@ -415,14 +423,14 @@ class _LoadThread(QThread):
             b.load()
             self.result = b
         except Exception:
-            # v69-fix: QThread未捕获异常=std::terminate=进程静默死亡（无crash.log/
-            # 无事件日志/无traceback，"执行动作后自动关闭"根因之一）。捕获后记日志降级。
+            # v69-fix: QThread uncaught exception = std::terminate = silent process death (no crash.log/
+            # no event log/no traceback, one cause of "auto-closes after action"). Catch and log, degrade gracefully.
             _crash_log('LoadThread')
             self.result = None
 
 
 class _StateLoadThread(QThread):
-    """v64: 懒加载单状态——后台构建该状态帧表，finished后主线程写回bank。"""
+    """v64: lazy-loadsinglestate --  -- backgroundBuildshouldstateframe table, finishedaftermain threadwrite backbank. """
     def __init__(self, bank, state):
         super().__init__()
         self.bank, self.state = bank, state
@@ -433,45 +441,48 @@ class _StateLoadThread(QThread):
         try:
             self.imgs, self.lift = self.bank._build_state(self.state)
         except Exception:
-            # v69-fix: 同上——懒加载线程异常不再杀死进程，记日志降级（该动作空白但存活）
+            # v69-fix: Same  --  lazy load thread exception no longer kills process, logs and degrades (action blank but alive)
             _crash_log(f'StateLoadThread[{self.state}]')
             self.imgs, self.lift = None, None
 
 
 class SpriteBank:
-    # v64: tight画布状态（assets由rebake_v64.py重烘焙：去空白边+质心居中+脚底锚定，
-    # calm六态基准统一560）。walk=认可版保持1024²方画布原路径。
+    # v64: tight canvas states (assets rebaked by rebake_v64.py: trim whitespace + center centroid + bottom anchor,
+    # calm six-state baseline unified 560). walk = approved version keeps 1024^2 square canvas original path.
     TIGHT = {'idle', 'run', 'eat', 'bark', 'sleep', 'sit', 'lick', 'happy',
              'roll', 'dance', 'stretch', 'beg', 'bath', 'surprised',
              'play_dead', 'pet', 'kiss', 'wave', 'type', 'walk'}
-    # v64: 一次性/低频状态懒加载——启动不预载，首次set_state触发后台异步装载，
-    # 常驻集=交互高频七态，内存峰值大幅下降。
-    # v67: dance/beg/bath 移入懒集（常驻-28MB纹理），首次触发走同步快路径。
-    # v22g: roll移出LAZY→常驻集。roll是菜单交互动作，懒加载导致首帧只装1帧
-    #      →后台线程构建期间bank被fullbank/zoom swap替换→全量帧表丢失
-    #      →动画停在1帧=用户报"2秒就结束"。常驻集启动时预载，无此问题。
-    # v67: 仅idle为启动必装态，其余全部LAZY（后台异步加载，首次触发时同步装1帧+后台全量）
-    # 常驻态太多导致fast_boot同步解码300+帧=启动卡顿
+    # v64: One-shot/low-frequency states lazy-loaded  --  not preloaded at startup, first set_state triggers background async load,
+    # resident set = 7 high-frequency interactive states, memory peak greatly reduced.
+    # v67: dance/beg/bath moved to lazy set (resident -28MB textures), first trigger uses sync fast path.
+    # v22g: roll moved out of LAZY -> resident set. roll is menu interaction action, lazy-load caused only 1 frame loaded
+    #      -> during background thread build, bank replaced by fullbank/zoom swap -> full frame table lost
+    #      -> animation stuck on 1 frame = user reports "ends in 2 seconds". Resident set preloads at startup, no issue.
+    # v67: Only idle is mandatory startup state, all others LAZY (background async load, first trigger sync-loads 5 frames + background full)
+    # v67-resident: High-frequency interaction states moved to resident set to eliminate first-trigger freeze.
+    #   These states (walk/run/bark/sit/sleep/eat/lick) are the most common AI auto-actions.
+    #   Low-frequency performance states (dance/beg/bath/happy/stretch/pet/play_dead/surprised/kiss/wave/type/roll) stay lazy.
     LAZY = {'happy', 'stretch', 'pet', 'play_dead', 'surprised',
-            'sleep', 'dance', 'beg', 'bath', 'eat',
-            'walk', 'run', 'bark', 'sit', 'lick', 'roll', 'kiss', 'wave', 'type'}
-    ASSET_SCALE = 1.05  # 纹理长边=屏上设备像素长边×1.05（1:1锐度+微余量，内存最小化）
+            'dance', 'beg', 'bath', 'kiss', 'wave', 'type', 'roll',
+            'run', 'eat', 'bark', 'sleep', 'sit', 'lick', 'walk'}  # v99: ALL non-idle states lazy — startup loads only idle
+    ASSET_SCALE = 1.05  # Texture long side = screen device pixel long side x 1.05 (1:1 sharpness + small margin)
 
     def __init__(self):
-        self.frames = {}     # state -> [QImage正常]
-        self.frames_m = {}   # state -> [QImage镜像]
-        self.geo = {}        # v64: state -> (源宽, 源高) 首帧尺寸(tight恒定)
-        self.alias = {}      # v64: state -> 帧表所有者(potty→sit等，去重不双载)
+        self.frames = {}     # state -> [QImage normal]
+        self.frames_m = {}   # state -> [QImage mirrored]
+        self.geo = {}        # v64: state -> (source width, source height) first frame size (tight constant)
+        self.alias = {}      # v64: state -> frame table owner (potty->sit etc, dedup no double-load)
         self._lazy_threads = {}
-        # 腿部装配部件：state -> dict(body/front/rear 各 [QImage正常, QImage镜像])
+        # Leg rig parts: state -> dict(body/front/rear each [QImage normal, QImage mirrored])
         self.rig_parts = {}
         self.rig_parts_m = {}
-        self.lift_map = {}   # state -> [每帧离地高度 0..1]（跳跃弧线联动阴影）
+        self.lift_map = {}   # state -> [per-frame lift height 0..1] (jump arc drives shadow)
+        self._sprite_meta = None  # unused
 
     def _state_draw(self, state):
-        """v64: 每状态按需分辨率。旧版统一draw=500(dpr2)——方画布空白也占长边，
-        纹理长边可达屏上需求2倍，内存∝draw²爆炸。改为按tight长边占比分配：
-        draw_s = draw × max(w,h)/1024 × ASSET_SCALE，钳制[96,1024]。"""
+        """v64: Per-state on-demand resolution. Old version unified draw=500(dpr2)  --  square canvas whitespace also takes long side,
+        texture long side can reach 2x screen requirement, memory proportional to draw squared explodes. Changed to proportional allocation by tight long side:
+        draw_s = draw x max(w,h)/1024 x ASSET_SCALE, clamped [96,1024]."""
         draw = getattr(self, 'draw_size', DRAW_SIZE)
         if state in self.TIGHT:
             w, h = self.geo.get(state, (1024, 1024))
@@ -481,29 +492,38 @@ class SpriteBank:
 
     def load(self):
         base = asset_path()
-        # ── v64 几何表：读每状态首帧尺寸（tight资产同状态尺寸恒定）──
+        #  --  v98: Try loading sprite_meta.json for geometry -- 
+        meta_path = os.path.join(base, 'sprite_meta.json')
+        if os.path.exists(meta_path) and self._sprite_meta is None:
+            try:
+                with open(meta_path, 'r') as fp:
+                    self._sprite_meta = json.load(fp)
+            except Exception:
+                self._sprite_meta = {}
+        #  --  v64 geometry table: read each state's first frame size (tight assets have constant size per state) --
         for state, (prefix, _c, _f, _l, _i) in ANIMS.items():
             if state in self.geo or state in self.alias:
-                continue
-            for ext in ('webp', 'png'):
-                fn = os.path.join(base, f'{prefix}_000.{ext}')
-                if os.path.exists(fn):
-                    r = QImageReader(fn)
-                    sz = r.size()
-                    if sz.isValid():
-                        self.geo[state] = (sz.width(), sz.height())
-                    break
+                pass
+            else:
+                for ext in ('webp', 'png'):
+                    fn = os.path.join(base, f'{prefix}_000.{ext}')
+                    if os.path.exists(fn):
+                        r = QImageReader(fn)
+                        sz = r.size()
+                        if sz.isValid():
+                            self.geo[state] = (sz.width(), sz.height())
+                        break
             self.geo.setdefault(state, (1024, 1024))
-        # ── v64 别名表：同prefix状态共享帧列表（potty→sit、potty_run→run）──
+        #  --  v64 alias table: same-prefix states share frame list (potty->sit, potty_run->run) -- 
         for state, (prefix, _c, _f, _l, _i) in ANIMS.items():
             owner = next((s2 for s2, (p2, _c2, _f2, _l2, _i2) in ANIMS.items()
                           if p2 == prefix), None)
             if owner and owner != state:
                 self.alias[state] = owner
                 self.geo.setdefault(state, self.geo.get(owner, (1024, 1024)))
-        # ── 装载：别名指向所有者列表；懒状态占位空表首次触发时装载 ──
-        # v67 启动快路径：FAST_BOOT 四态主线程同步限帧装载（首屏<300ms），
-        # 其余常驻态由调用方后台全量构建后 swap 补装。
+        #  --  Loading: aliases point to owner list; lazy states placeholder empty tables loaded on first trigger  -- 
+        # v67 startup fast path: FAST_BOOT four states main thread sync limited-frame load (first screen <300ms),
+        # remaining resident states built in background by caller then swap-installed.
         fast = getattr(self, 'fast_boot', False)
         for state in ANIMS:
             if state in self.alias:
@@ -516,15 +536,17 @@ class SpriteBank:
                 self.frames_m[state] = []
                 self.lift_map[state] = []
             elif fast:
-                # v67: 常驻态同步装载（首屏零空白），
-                # 30帧≈1.25秒循环，避免只有6帧时的明显抖动
-                self._load_state(state, 30)
+                # v96-fix: Resident states sync-loaded with ALL frames (not 30) to eliminate
+                # the 30-frame -> 121-frame swap jitter. Modern CPUs decode 121 WebP <50ms.
+                # Old fast_boot loaded only 30 frames, then _on_fullbank_loaded swapped to 121,
+                # resetting frame_idx=0 mid-animation = visible jitter/stutter.
+                self._load_state(state)
             else:
                 self._load_state(state)
-        # v19: 逐帧切腿——run素材含gallop跳跃（逐帧body_bot位移达31px），
-        # 固定切线(只用第0帧)会让跳跃帧腿块错位。每帧按自身身体底缘切割，
-        # 既保留帧内gallop起伏，又保证切线始终贴合身体。
-        # potty_run 复用 run 帧，同样装配
+        # v19: Per-frame leg cutting  --  run frames contain gallop jumps (per-frame body_bot displacement up to 31px),
+        # fixed cut line (only frame 0) misaligns leg blocks on jump frames. Cut per-frame by own body bottom,
+        # preserving in-frame gallop undulation while keeping cut line aligned with body.
+        # potty_run reuses run frames, same rig
         rig_map = {}
         for state, (prefix, _c, _f, _l, _i) in ANIMS.items():
             if prefix in LEG_RIG:
@@ -540,7 +562,7 @@ class SpriteBank:
                 if bb is None:
                     cut = geo['cut_row']
                 else:
-                    cut = max(40, min(240, bb - 8))   # 切线=身体底缘上方8行
+                    cut = max(40, min(240, bb - 8))   # cut line = 8 rows above body bottom
                 g2 = dict(geo, cut_row=cut,
                           front_hip=(geo['front_hip'][0], cut + 1),
                           rear_hip=(geo['rear_hip'][0], cut + 1))
@@ -550,16 +572,16 @@ class SpriteBank:
             self.rig_parts_m[state] = parts_m
 
     def _sync_first_frame(self, state):
-        """v67: 懒状态首帧同步快路径——后台全量装载完成前先装1帧立即显示，
-        根治动作触发"卡顿+空白画面"（旧版异步装载期间get()返回空图=空白）。
-        全量线程完成后 _on_lazy_done 原子覆盖为完整帧表。"""
+        """v99: Load all frames synchronously. With background preload running,
+        most states are already loaded before user triggers them.
+        This is the fallback for states not yet preloaded."""
         owner = self.alias.get(state, state)
         if owner not in self.LAZY:
             return
         if self.frames.get(owner) or owner in self._lazy_threads:
             return
         try:
-            imgs, lift = self._build_state(owner, 1)
+            imgs, lift = self._build_state(owner)
         except Exception:
             return
         if imgs:
@@ -571,13 +593,17 @@ class SpriteBank:
                 self._loaded_order.append(owner)
 
     def ensure_state(self, state):
-        """v64: 懒状态首次触发→后台异步装载（不阻塞渲染；装载期间get()返回空图跳过绘制）
-        v67: 先同步装首帧（<80ms）保证立即有画面，后台线程随后全量覆盖。"""
+        """v99: Lazy state first trigger -> sync 5 frames for immediate display,
+        then background thread loads all frames and atomically overwrites."""
         if state not in self.LAZY or self.frames.get(state):
             return
         if state in self._lazy_threads:
             return
         self._sync_first_frame(state)
+        # Check if sync already loaded ALL frames (only possible for short animations)
+        _, total_count, _, _, _ = ANIMS.get(state, (None, 0, 0, True, 0))
+        if self.frames.get(state) and len(self.frames[state]) >= total_count:
+            return  # Already fully loaded
         t = _StateLoadThread(self, state)
         self._lazy_threads[state] = t
         t.finished.connect(lambda s=state, th=t: self._on_lazy_done(s, th))
@@ -586,17 +612,17 @@ class SpriteBank:
     def _on_lazy_done(self, state, t):
         self._lazy_threads.pop(state, None)
         if t.imgs is not None:
-            # v94-fix race: 懒加载线程构建期间 bank 可能被 fullbank/zoom swap 替换，
-            # 旧代码写回旧bank=新bank永远拿不到全量帧表（动作卡死首帧=动作消失）。
-            # 沿 _replaced_by 链路由到最新bank再写。
+            # v94-fix race: During lazy-load thread build, bank may be replaced by fullbank/zoom swap,
+            # old code wrote back to old bank = new bank never gets full frame table (action stuck on first frame = action disappears).
+            # Route via _replaced_by chain to latest bank before writing.
             bank = self
             while getattr(bank, '_replaced_by', None) is not None:
                 bank = bank._replaced_by
             bank.frames[state] = t.imgs
             bank.frames_m[state] = [None] * len(t.imgs)
             bank.lift_map[state] = t.lift
-            # v67: 全量帧表替换首帧快路径后，当前帧索引可能越界（首帧bank长度1），
-            # 通知窗口复位动画相位避免 IndexError/卡帧。
+            # v67: After full frame table replaces first-frame fast path, current frame index may overflow (first-frame bank length 1),
+            # notify window to reset animation phase to avoid IndexError/stuck frame.
             cb = getattr(bank, 'on_state_reloaded', None)
             if cb:
                 cb(state)
@@ -607,15 +633,15 @@ class SpriteBank:
         self.frames[state] = imgs
         self.frames_m[state] = [None] * len(imgs)
         self.lift_map[state] = lift
-        # v66 LRU: 记录装载顺序（供卸载最久未用的懒状态）
+        # v66 LRU: Record load order (for unloading least-recently-used lazy states)
         self._loaded_order = getattr(self, '_loaded_order', [])
         if state in self.LAZY and state not in self._loaded_order:
             self._loaded_order.append(state)
 
-    def unload_idle_lazy(self, active_state, keep=8):
-        """v66: 内存回收——已装载的懒状态超出 keep 个且非当前态时，
-        卸载最久未触发的（frames/frames_m/lift 清空回懒态占位）。
-        别名态(potty→sit)与当前态、常驻态不卸。返回卸载数。"""
+    def unload_idle_lazy(self, active_state, keep=3):
+        """v66: Memory reclaim  --  loaded lazy states exceeding keep count and not current state,
+        unload least-recently-triggered (clear frames/frames_m/lift back to lazy placeholder).
+        Aliased states (potty->sit), current state, and resident states not unloaded. Return unload count."""
         order = getattr(self, '_loaded_order', [])
         n = 0
         for st in list(order):
@@ -623,7 +649,7 @@ class SpriteBank:
                 break
             if st == active_state or not self.frames.get(st):
                 continue
-            # 有别名态指向它→不卸
+            # Alias state points to it -> don't unload
             if any(self.alias.get(s2) == st for s2 in self.alias):
                 continue
             self.frames[st] = []
@@ -634,10 +660,9 @@ class SpriteBank:
         return n
 
     def _build_state(self, state, frame_limit=None):
-        """v64: 单状态帧表构建。tight态按原比例缩放到按需分辨率（长边=draw_s）；
-        方画布态(walk认可版)走旧路径(scaled方框+质心居中)。
-        v67: frame_limit——只构建前N帧（启动快路径/懒状态首帧同步快路径），
-        调用方负责后续全量补装。"""
+        """v99: Load pre-scaled assets directly (no runtime scaling).
+        Assets are baked offline at DRAW_MAX size, engine loads with zero scaling.
+        Falls back to legacy scaled path if assets are full-size."""
         base = asset_path()
         prefix, count, _f, _l, _i = ANIMS[state]
         tight = state in self.TIGHT
@@ -645,6 +670,8 @@ class SpriteBank:
         if frame_limit:
             count = min(count, frame_limit)
         imgs = []
+
+        # v99: Load individual frame files (pre-scaled offline, no sprite sheet)
         for i in range(count):
             fn = os.path.join(base, f'{prefix}_{i:03d}.webp')
             if not os.path.exists(fn):
@@ -660,17 +687,16 @@ class SpriteBank:
                                  max(2, int(round(h * sc))),
                                  Qt.KeepAspectRatio, Qt.SmoothTransformation)
             else:
-                # 缩放到目标尺寸（双线性平滑）
                 img = img.scaled(draw, draw,
                                   Qt.KeepAspectRatio, Qt.SmoothTransformation)
             imgs.append(img)
         if not tight and imgs:
-            # v49: 镜像懒生成——get()首次请求时按需镜像已居中的draw×draw画布
-            # （居中天然对称，无shift误差）。
+            # v49: Mirror lazy generation  --  get() mirrors centered draw x draw canvas on first request
+            # (centered = naturally symmetric, no shift error).
             imgs, _sh = self._center_frames(imgs)
-        # ── 每帧离地高度：内容包围盒底边相对全序列最大底边的抬升（归一化0..1）──
-        # 纯Python抽样扫描：从底向上逐行、每8列取一点（脚底通常前几行即命中）
-        # v66: cacheKey缓存底边（动作重复触发/zoom重建不重扫，消除触发CPU尖峰）
+        #  --  Per-frame lift height: content bbox bottom relative to max bottom of full sequence, normalized 0..1 -- 
+        # Pure Python sample scan: bottom-up per row, every 8 columns (feet usually hit in first few rows)
+        # v66: cacheKey caches bottom (repeat action trigger/zoom rebuild no rescan, eliminates trigger CPU spike)
         bottoms = []
         for im in imgs:
             key = im.cacheKey()
@@ -679,10 +705,10 @@ class SpriteBank:
                 continue
             buf = im.constBits()
             buf.setsize(im.byteCount())
-            data = bytes(buf)   # bytes索引返回int，可直接比较
+            data = bytes(buf)   # bytes index returns int, can compare directly
             w4 = im.width() * 4
             bpl = im.bytesPerLine()
-            cols = range(0, w4, 32)   # 每8列采样alpha通道
+            cols = range(0, w4, 32)   # Sample alpha channel every 8 columns
             bottom = im.height() - 1
             for row in range(im.height() - 1, -1, -1):
                 rowbase = row * bpl + 3
@@ -696,9 +722,9 @@ class SpriteBank:
         if bottoms:
             ground = max(bottoms)
             var = ground - min(bottoms)
-            # 阴影闪烁根因：腿姿态/呼吸引起的底边小幅抖动(<30px)不是真跳跃，
-            # 旧代码用 max(6.0, var) 归一化会把12px抬腿放大成100%离地→阴影每步收缩45%。
-            # 变差<30px 视为贴地，lift恒为0；仅真跳跃状态(run/jump/stretch等)保留阴影联动。
+            # Shadow flicker cause: small bottom jitter (<30px) from leg pose/breathing is not real jumping,
+            # old code normalized with max(6.0, var) amplifying 12px leg lift to 100% airborne -> shadow shrinks 45% per step.
+            # Variance <30px treated as grounded, lift=0; only real jumping states (run/jump/stretch etc) keep shadow linkage.
             if var < 30:
                 lift = [0.0 for _ in bottoms]
             else:
@@ -710,8 +736,8 @@ class SpriteBank:
 
     @staticmethod
     def _body_bottom(img):
-        """内容底缘上方第一个'宽行'(>62%最大行宽)的行号=身体底缘；无内容返回None。
-        v66: cacheKey缓存（同图不重扫，zoom重建/重复装配省CPU）。"""
+        """First 'wide row' (>62% of max row width) above content bottom = body bottom; no content returns None.
+        v66: cacheKey cache (same image no rescan, zoom rebuild/repeat rig saves CPU)."""
         key = img.cacheKey()
         cache = _BODY_BOTTOM_CACHE
         if key in cache:
@@ -744,9 +770,9 @@ class SpriteBank:
 
     @staticmethod
     def _content_centroid_x(img):
-        """内容(alpha>24)的水平质心x；无内容返回None
-        v48: 4x降采样（旧逐像素纯Python扫描占load()70%耗时，2.5x缩放时20s）。
-        均匀降采样质心误差<2px，shift取int(round)后输出不变。"""
+        """Content (alpha>24) horizontal centroid x; no content returns None
+        v48: 4x downsample (old per-pixel pure Python scan was 70% of load(), 20s at 2.5x zoom).
+        Uniform downsample centroid error <2px, shift uses int(round) so output unchanged."""
         w, h = img.width(), img.height()
         buf = img.constBits()
         buf.setsize(img.byteCount())
@@ -754,7 +780,7 @@ class SpriteBank:
         bpl = img.bytesPerLine()
         sum_x, cnt = 0.0, 0
         for y in range(0, h, 4):
-            rowbase = y * bpl + 3  # ARGB32 的 alpha 通道
+            rowbase = y * bpl + 3  # ARGB32 alpha channel
             for x in range(0, w, 4):
                 if data[rowbase + x * 4] > 24:
                     sum_x += x
@@ -762,11 +788,11 @@ class SpriteBank:
         return sum_x / cnt if cnt else None
 
     def _center_frames(self, imgs, shift=None):
-        """v11 帧水平居中：整序列共享偏移，根治'超出边框'。
-        根因：walk帧内容贴素材左缘(左边距=0)、质心偏-44px，镜像后狗头顶窗口边缘；
-        且帧间质心漂移导致左右晃动。用全序列平均质心做统一平移——
-        既让狗在窗口内居中，又消除帧间水平抖动。v25: 按当前缩放尺寸绘制。
-        v48: shift可外部指定(镜像帧公式推导)，返回(out, shift)供调用方推导镜像偏移。"""
+        """v11 frame horizontal centering: shared offset across sequence, fixes 'out of frame'.
+        Cause: walk frame content hugs left edge (left margin=0), centroid offset -44px, after mirror dog head at window edge;
+        and inter-frame centroid drift causes left-right wobble. Use sequence-average centroid for unified shift  -- 
+        both centers dog in window and eliminates inter-frame jitter. v25: draw at current zoom size.
+        v48: shift can be external (mirror frame formula derivation), returns (out, shift) for caller to derive mirror offset."""
         draw = self.draw_size
         if shift is None:
             cxs = [c for c in (SpriteBank._content_centroid_x(im) for im in imgs) if c is not None]
@@ -786,9 +812,9 @@ class SpriteBank:
         return out, shift
 
     def _cut_rig(self, img, geo, mirrored=False):
-        """把精灵切成 身体/前腿/后腿 三块（带接缝渐隐）
-        mirrored=True 时输入为镜像图：分割线镜像，部件按解剖学归属命名"""
-        # 规范化到draw_size画布(水平居中/底部对齐)，与离线烘焙几何严格对齐
+        """Split sprite into body/front-leg/rear-leg three blocks (with seam fade)
+        mirrored=True: input is mirrored image: cut line mirrored, parts named by anatomy"""
+        # Normalize to draw_size canvas (horizontal center/bottom align), strictly aligned with offline bake geometry
         draw = self.draw_size
         canvas = QImage(draw, draw, QImage.Format_ARGB32_Premultiplied)
         canvas.fill(Qt.transparent)
@@ -801,21 +827,21 @@ class SpriteBank:
         w, h = img.width(), img.height()
         cut = geo['cut_row']
         split = geo['split_x'] if not mirrored else w - geo['split_x']
-        # 身体块：完整宽度，向下越过切线RIG_BODY_OVERLAP行（覆盖髋部接缝）
+        # Body block: full width, extends below cut line by RIG_BODY_OVERLAP rows (covers hip seam)
         body = img.copy(0, 0, w, min(h, cut + RIG_BODY_OVERLAP))
-        # 腿块：从切线上方RIG_LEG_TOP行开始（与身体重叠，旋转时不漏底）
+        # Leg block: starts RIG_LEG_TOP rows above cut line (overlaps body, no bottom gap during rotation)
         leg_y0 = max(0, cut - RIG_LEG_TOP)
         leg_h = h - leg_y0
         left = img.copy(0, leg_y0, split, leg_h)
         right = img.copy(split, leg_y0, w - split, leg_h)
         if mirrored:
-            # 镜像后解剖学前腿在右侧
+            # After mirror, anatomical front leg is on right
             front, front_x0 = right, split
             rear, rear_x0 = left, 0
         else:
             front, front_x0 = left, 0
             rear, rear_x0 = right, split
-        # 腿块顶部渐隐（接缝融合）：DestinationIn用alpha渐变蒙版
+        # Leg block top fade (seam blending):DestinationIn with alpha gradient mask
         for part in (front, rear):
             mp = QPainter(part)
             mp.setCompositionMode(QPainter.CompositionMode_DestinationIn)
@@ -824,7 +850,7 @@ class SpriteBank:
             grad.setColorAt(1.0, QColor(0, 0, 0, 255))
             mp.fillRect(0, 0, part.width(), RIG_FADE, QBrush(grad))
             mp.end()
-        # 髋关节枢轴：转换到各腿块的局部坐标
+        # Hip joint pivot: transform to each leg block's local coordinates
         fhx, fhy = geo['front_hip']
         rhx, rhy = geo['rear_hip']
         if mirrored:
@@ -838,25 +864,25 @@ class SpriteBank:
                 'amp_deg': geo['amp_deg']}
 
     def get(self, state, idx, flipped):
-        state = self.alias.get(state, state)   # v64: 别名解析(potty→sit)，懒owner安全
+        state = self.alias.get(state, state)   # v64: Alias resolution (potty->sit), lazy-owner safe
         if flipped:
             bank = self.frames_m[state]
             i = idx % len(bank) if bank else 0
             if not bank or bank[i] is None:
                 src = self.frames.get(state) or []
                 if not src:
-                    return QImage()   # v64懒加载未完成→空图跳过绘制
-                # v49镜像懒生成：首次请求才镜像，内存减半
+                    return QImage()   # v64 lazy-load incomplete -> empty image skip draw
+                # v49 mirror lazy generation: mirror on first request, memory halved
                 bank[i] = src[i].mirrored(True, False)
             return bank[i]
         bank = self.frames[state]
         if not bank:
-            return QImage()           # v64懒加载未完成→空图跳过绘制
+            return QImage()           # v64 lazy-load incomplete -> empty image skip draw
         return bank[idx % len(bank)]
 
 
 # ═══════════════════════════════════════════════════════════
-#  粒子系统
+#  Particle system
 # ═══════════════════════════════════════════════════════════
 class ParticleSystem:
     HEART, ZZZ, STINK, SPARKLE, CRUMB, BUBBLE, DUST = range(7)
@@ -956,7 +982,7 @@ class ParticleSystem:
                 painter.drawEllipse(QPointF(x, y), s * 0.2, s * 0.16)
 
             elif t == self.BUBBLE:
-                # 气泡文字（如"汪!"）
+                # Speech bubble text (e.g. "Woof!")
                 f = QFont(_UI_FONT, 11)
                 f.setBold(True)
                 painter.setFont(f)
@@ -969,7 +995,7 @@ class ParticleSystem:
                 painter.setPen(QPen(c_bd, 1.5))
                 painter.setBrush(c_bg)
                 painter.drawRoundedRect(QRectF(bx, by, bw, bh), 12, 12)
-                # 小尾巴
+                # Little tail
                 path = QPainterPath()
                 path.moveTo(x - 4, by + bh - 1)
                 path.lineTo(x, by + bh + 6)
@@ -980,7 +1006,7 @@ class ParticleSystem:
 
 
 # ═══════════════════════════════════════════════════════════
-#  物理系统
+#  Physics system
 # ═══════════════════════════════════════════════════════════
 class Physics:
     def __init__(self):
@@ -989,7 +1015,7 @@ class Physics:
         self.active = False
         self.gravity = 1600.0
         self.restitution = 0.38
-        self.squash = 0.0   # 落地挤压计时
+        self.squash = 0.0   # Landing squash timer
 
     def throw(self, vx, vy):
         self.vx = max(-1400, min(1400, vx))
@@ -1005,7 +1031,7 @@ class Physics:
         y = win.y() + self.vy * dt
         bounced = 0
 
-        # 地面
+        # Ground
         if y >= floor_y:
             y = floor_y
             if abs(self.vy) > 120:
@@ -1020,14 +1046,14 @@ class Physics:
                     self.vx = 0.0
                     self.active = False
                     self.squash = 0.6
-        # 左右墙
+        # Left/right walls
         if x < screen_l:
             x = screen_l
             self.vx = -self.vx * 0.5
         elif x > screen_r:
             x = screen_r
             self.vx = -self.vx * 0.5
-        # 天花板：抛出后不再冲出屏幕顶部（旧代码无上边界→宠物飞出可视区域）
+        # Ceiling: thrown pets can't fly off screen top (old code had no upper bound -> pet flew off visible area)
         if y < 0:
             y = 0
             if self.vy < 0:
@@ -1039,47 +1065,50 @@ class Physics:
 
 
 # ═══════════════════════════════════════════════════════════
-#  主窗口
+#  Main window
 # ═══════════════════════════════════════════════════════════
-WINDOW_TITLE = PET_NAME_ASCII + '_MainWindow'  # 固定窗口标题：供重复启动的新实例FindWindow定位并激活（从CONFIG派生，换宠物无需改）
+WINDOW_TITLE = PET_NAME_ASCII + '_MainWindow'  # Fixed window title: for FindWindow to locate and activate on repeated launch (derived from CONFIG, no change needed for new pet)
 
 
 class PetWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(WINDOW_TITLE)
-        # v25 (P1): 根治"点击宠物外区域宠物消失"——
-        # 旧代码用 Qt.Tool：Windows下Tool窗口属于"工具浮窗"，其他应用激活时系统会隐藏它。
-        # 改为普通 Qt.Window + WS_EX_NOACTIVATE：窗口永不抢占焦点、不抢前台，
-        # 但属于独立顶层窗口，失焦/切走都不会被系统隐藏。
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Window)
+        # P3 fix: macOS uses Qt.Tool (no focus steal, no Cmd-Tab entry, fixes Chrome keyboard bug)
+        # Windows uses Qt.Window + WS_EX_NOACTIVATE (Tool windows get hidden on app switch)
+        if sys.platform == 'darwin':
+            self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        else:
+            self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Window)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
+        # P3: disable keyboard focus (attribute may not exist in all PyQt5 versions)
+        if hasattr(Qt, 'WA_InputMethodDisabled'):
+            self.setAttribute(Qt.WA_InputMethodDisabled, True)
 
-        # v25 (P9): 读取持久化缩放比例（默认1.0）
+        # v25 (P9): Read persisted zoom ratio (default 1.0)
         self.zoom = load_zoom()
         self.setFixedSize(int(CANVAS * self.zoom), int(CANVAS * self.zoom))
 
         self.bank = SpriteBank()
-        # v2 高分辨率: 纹理尺寸=逻辑尺寸×dpr，Retina上设备像素1:1（不再2倍放大模糊）
+        # v2 HiDPI: Texture size = logical size x dpr, Retina device pixel 1:1 (no more 2x blur)
         self.bank.draw_size = int(DRAW_SIZE * self.zoom * _target_dpr(self))
-        # v67: 启动快路径——主线程只同步装 FAST_BOOT 四态限帧表（<300ms首屏可见），
-        # 完整常驻集后台构建后原子swap（旧版同步全量=800+帧解码，首屏卡顿+空白）。
+        # v67: Startup fast path  --  main thread only sync-loads FAST_BOOT four states limited frames (<300ms first screen),
+        # full resident set built in background then atomic swap (old sync full = 800+ frame decode, startup stutter + blank).
         self.bank.fast_boot = True
         self.bank.load()
         self.bank.on_state_reloaded = self._on_state_reloaded
-        self._fullbank_thread = _LoadThread(self.bank.draw_size)
-        self._fullbank_thread.finished.connect(self._on_fullbank_loaded)
-        self._fullbank_thread.start()
+        # v99: No _fullbank_thread — all states are LAZY, loaded on-demand only
+        self._fullbank_thread = None
         self.particles = ParticleSystem()
         self.physics = Physics()
-        # Windows原生扩展样式：宠物窗口不激活、不抢焦点（Tool行为的手感，无Tool的消失bug）
+        # Windows native extended style: pet window no activation, no focus stealing (Tool-like behavior without Tool's disappear bug)
         if sys.platform == 'win32':
             try:
                 import ctypes
                 GWL_EXSTYLE = -20
                 WS_EX_NOACTIVATE = 0x08000000
-                WS_EX_TOOLWINDOW = 0x00000080  # 不占任务栏按钮（原Qt.Tool的手感）
+                WS_EX_TOOLWINDOW = 0x00000080  # No taskbar button (original Qt.Tool feel)
                 user32 = ctypes.windll.user32
                 st = user32.GetWindowLongW(int(self.winId()), GWL_EXSTYLE)
                 user32.SetWindowLongW(int(self.winId()), GWL_EXSTYLE,
@@ -1091,15 +1120,15 @@ class PetWindow(QWidget):
         self.state_started = time.perf_counter()
         self.anim_elapsed = 0.0
         self.frame_idx = 0
-        self.facing = 1          # 1=右 -1=左（素材朝左，右移时镜像）
+        self.facing = 1          # 1=right -1=left (assets face left, mirror when moving right)
         self.flipped = False
 
-        # 模式
-        self.mode = 'taskbar'    # desktop(拖放固定原地做动作) / taskbar(任务栏漫步) / tease(逗弄)
+        # Modes
+        self.mode = 'taskbar'    # desktop(drag-drop fixed spot doing actions) / taskbar(taskbar roaming) / tease(teasing)
         self.roam_target = None
         self.tease_last_cursor = None
 
-        # 属性
+        # Properties
         self.fullness = 80.0
         self.happiness = 70.0
         self.energy = 90.0
@@ -1108,72 +1137,75 @@ class PetWindow(QWidget):
         # AI
         self.ai_timer = random.uniform(3, 7)
         self.walk_dir = random.choice([-1, 1])
-        self.state_duration = {}  # 限时状态
+        self.state_duration = {}  # Timed states
 
-        # 拖拽
+        # Drag
         self.dragging = False
         self.drag_off = QPoint()
         self.mouse_hist = []
         self.throw_vel = (0, 0)
 
-        # 渲染变换 & 运动状态
+        # Render transforms & motion state
         self.roll_angle = 0.0
-        self.vel_x = 0.0        # 当前水平速度 px/s（缓动）
-        self.move_acc = 0.0     # 亚像素累积器
-        self.pop_t = 0.0        # 状态切入弹簧
-        self.antic_t = 0.0      # 起步预备下蹲
-        self.settle_t = 0.0     # 停止缓冲挤压
-        self.turn_phase = None  # 转身动画 0..1
+        self.vel_x = 0.0        # Current horizontal velocity px/s (eased)
+        self.move_acc = 0.0     # Subpixel accumulator
+        self.pop_t = 0.0        # State entry spring
+        self.antic_t = 0.0      # Start antic crouch
+        self.settle_t = 0.0     # Stop settle squash
+        self.turn_phase = None  # Turn animation 0..1
         self.turn_flipped = False
         self.turn_new_facing = 1
-        self.smooth_air = 0.0   # 平滑后的离地高度（防止阴影逐帧跳动闪烁）
-        self.micro = None       # 待机微动作（歪头/抖动/小跳）
+        self.smooth_air = 0.0   # Smoothed airborne height (prevents per-frame shadow jitter/flicker)
+        self.micro = None       # Idle micro-action (head tilt/shake/small jump)
         self.sleep_twitch_t = 0.0
         self.sleep_twitch_next = random.uniform(5, 9)
 
-        # 腿部装配动画相位（连续累加器，不受60fps整帧限制）
-        self.leg_phase = 0.0    # 步态相位 [0, 2π)
-        self.leg_amp = 0.0      # 摆幅系数（起步缓入，停止缓出）
+        # Leg rig animation phase (continuous accumulator, not limited by 60fps frame steps)
+        self.leg_phase = 0.0    # Gait phase [0, 2pi)
+        self.leg_amp = 0.0      # Swing amplitude (ease-in on start, ease-out on stop)
         self._last_paint_dt = time.perf_counter()
-        self._tick_cur = 16     # v66: 当前定时器间隔（自适应）
+        self._tick_cur = 16     # v66: Current timer interval (adaptive)
 
-        # 初始位置：屏幕底部（按缩放窗口尺寸定位）
+        # Initial position: screen bottom (positioned by zoomed window size)
         sg = QApplication.primaryScreen().geometry()
         self.floor_y = sg.bottom() - int(CANVAS * self.zoom) - 45
         self.move(sg.center().x() - int(CANVAS * self.zoom) // 2, self.floor_y)
 
         self.last_t = time.perf_counter()
         self.timer = QTimer(self)
-        self.timer.setTimerType(Qt.PreciseTimer)  # Windows默认定时器抖动15-31ms，精确模式减少帧间隔波动
+        self.timer.setTimerType(Qt.PreciseTimer)  # Windows default timer jitter 15-31ms, precise mode reduces frame interval variance
         self.timer.timeout.connect(self.game_loop)
         self.timer.start(16)
         self.show()
 
-        # v25 (P1): 可见性守护——无论什么原因窗口被隐藏/最小化，2秒内强制恢复。
-        # 宠物常驻桌面：只有右键菜单"退出"才能真正关闭。
+        # v99: Background-preload lazy states after startup (walk/run/eat etc)
+        QTimer.singleShot(1000, self._start_lazy_preload)
+
+        # v25 (P1): Visibility guard  --  whatever causes window hide/minimize, force restore within 2s.
+        # Pet persists on desktop: only right-click menu "Exit" can truly close it.
         self._vis_timer = QTimer(self)
         self._vis_timer.timeout.connect(self._ensure_visible)
         self._vis_timer.start(2000)
 
-    # ─────────── v25 (P1/P9): 常驻守护 & 缩放 ───────────
+    #  --  --  --  --  -- ─ v25 (P1/P9): Persistence guard & zoom  --  --  --  --  -- ─
     def _ensure_visible(self):
-        """窗口不可见/被最小化时强制恢复，并刷新置顶防止被其他应用盖住"""
+        """Force restore when window invisible/minimized, refresh stay-on-top to prevent being covered by other apps"""
         if not self.isVisible() or self.isMinimized():
             self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
             self.show()
-        # v26: 刷新置顶——WindowStaysOnTopHint可能被其他置顶窗口压住
+        # v26: Refresh stay-on-top  --  WindowStaysOnTopHint may be overridden by other top windows
         self.raise_()
 
     def changeEvent(self, event):
-        """拦截外部最小化（如Win+D/任务栏"显示桌面"会短暂隐藏所有窗口），保持常驻"""
+        """Intercept external minimize (e.g. Win+D/taskbar "Show Desktop" briefly hides all windows), stay persistent"""
         if event.type() == event.WindowStateChange and self.isMinimized():
             QTimer.singleShot(0, self._ensure_visible)
         super().changeEvent(event)
 
     def set_zoom(self, new_zoom):
-        """v25 (P9): 运行时切换缩放——重建精灵+调整窗口+底部锚定，并持久化
-        v48: 重建改后台线程（旧版主线程同步load()=579帧重载+像素扫描，卡死UI）。
-        加载期间旧精灵由paintEvent顶层scale(zoom)自动缩放绘制，完成后原子swap。"""
+        """v25 (P9): Runtime zoom switch  --  rebuild sprites + adjust window + bottom anchor, and persist
+        v48: Rebuild moved to background thread (old main thread sync load() = 579 frame reload + pixel scan, freezes UI).
+        During load, old sprite auto-scaled by paintEvent top-level scale(zoom), atomic swap on completion."""
         new_zoom = max(ZOOM_MIN, min(ZOOM_MAX, new_zoom))
         if abs(new_zoom - self.zoom) < 1e-6:
             return
@@ -1184,10 +1216,10 @@ class PetWindow(QWidget):
         self.setFixedSize(cw, cw)
         sg = QApplication.primaryScreen().geometry()
         self.floor_y = sg.bottom() - cw - 45
-        # 以窗口中心为锚点缩放，并钳制在屏幕内
+        # Zoom anchored at window center, clamped within screen
         nx = self.x() + old_w // 2 - cw // 2
         if self.mode == 'desktop':
-            # 拖放固定模式：保持当前y位置，不拉回底部
+            # drag-drop fixed mode: keep current y position, do not snap back to bottom
             ny = self.y() + old_h - cw
         else:
             ny = min(self.y() + old_h - cw, self.floor_y)
@@ -1204,7 +1236,7 @@ class PetWindow(QWidget):
         self.update()
 
     def _on_zoom_loaded(self):
-        """后台精灵构建完成——仅最新一次生效，原子替换bank，UI全程不阻塞"""
+        """Background sprite build complete -- only latest takes effect, atomic bank swap, UI never blocks"""
         t = self.sender()
         try:
             self._pending_loads.remove(t)
@@ -1213,29 +1245,32 @@ class PetWindow(QWidget):
         if t._seq == getattr(self, '_load_seq', 0) and t.result is not None:
             old = self.bank
             new = t.result
-            # v94-fix: 迁移已装载懒状态帧表（旧版zoom重建后动作帧丢失=动作消失）
+            # v94-fix: Migrate loaded lazy state frame tables (old zoom rebuild lost action frames = actions disappear)
             for st, fr in old.frames.items():
                 if fr and st in new.LAZY:
                     new.frames[st] = fr
                     new.frames_m[st] = old.frames_m.get(st) or [None] * len(fr)
                     new.lift_map[st] = old.lift_map.get(st) or []
             new._loaded_order = list(getattr(old, '_loaded_order', []))
-            old._replaced_by = new   # v94-fix: 在途懒加载写回路由到最新bank
+            old._replaced_by = new   # v94-fix: In-flight lazy load write-back routes to latest bank
             self.bank = new
             self.bank.on_state_reloaded = self._on_state_reloaded
             self.update()
         t.deleteLater()
 
     def _on_fullbank_loaded(self):
-        """v67: 后台完整常驻集构建完成→原子swap。懒状态已装的首帧表保留
-        （full bank 的懒集是空占位，swap 后 _loaded_order 保留、frames 保留）。"""
+        """v67: Background full resident set build complete -> atomic swap. Lazy state loaded first-frame tables retained
+        (full bank's lazy set is empty placeholder, after swap _loaded_order retained, frames retained).
+        v96-fix: Do NOT reset frame_idx/anim_elapsed after swap. The fast_boot now loads ALL frames
+        (not 30), so the swap is identical frame data - no frame count change = no jump.
+        Old reset caused mid-animation restart = visible stutter on first EXE open."""
         t = self._fullbank_thread
         self._fullbank_thread = None
         if t.result is None:
             t.deleteLater()
             return
         new = t.result
-        # 保留懒状态已装载的帧表（启动后用户触发过的动作不丢）
+        # Retain lazy state loaded frame tables (actions triggered by user after startup not lost)
         for st, fr in self.bank.frames.items():
             if fr and st in new.LAZY:
                 new.frames[st] = fr
@@ -1243,13 +1278,47 @@ class PetWindow(QWidget):
                 new.lift_map[st] = self.bank.lift_map.get(st) or []
         new._loaded_order = list(getattr(self.bank, '_loaded_order', []))
         new.on_state_reloaded = self._on_state_reloaded
-        self.bank._replaced_by = new   # v94-fix: 在途懒加载写回路由到最新bank
+        self.bank._replaced_by = new   # v94-fix: In-flight lazy load write-back routes to latest bank
         self.bank = new
+        # v96-fix: No frame_idx/anim_elapsed reset - bank swap is now transparent
+        # (fast_boot loads full 121 frames, swap replaces with identical data)
         self.update()
         t.deleteLater()
+        # v98: Disabled startup preload — strict on-demand loading only.
+        # Lazy states load when user triggers them via menu, not at startup.
+        # This eliminates startup IO/CPU spike that caused first-open stutter.
+
+    def _start_lazy_preload(self):
+        """v99: After idle loads, background-preload all lazy states one-by-one (300ms gap)
+        so user triggers find frames already loaded — no first-trigger stutter."""
+        states = [s for s in ANIMS if s in self.bank.LAZY and not self.bank.frames.get(s)]
+        if not states:
+            return
+        # Prioritize common interaction states first
+        priority = ['walk', 'run', 'bark', 'sit', 'sleep', 'eat', 'lick',
+                    'happy', 'pet', 'stretch', 'dance', 'beg', 'bath',
+                    'play_dead', 'surprised', 'kiss', 'wave', 'type', 'roll']
+        ordered = [s for s in priority if s in states] + [s for s in states if s not in priority]
+        self._preload_queue = ordered
+        self._preload_timer = QTimer(self)
+        self._preload_timer.setSingleShot(True)
+        self._preload_timer.timeout.connect(self._preload_next)
+        self._preload_timer.start(500)  # first preload 500ms after startup
+
+    def _preload_next(self):
+        """Load one lazy state at a time, then queue the next."""
+        if not getattr(self, '_preload_queue', None):
+            return
+        state = self._preload_queue.pop(0)
+        owner = self.bank.alias.get(state, state)
+        if not ((self.bank.frames.get(owner) and len(self.bank.frames[owner]) > 1) or
+                owner in self.bank._lazy_threads):
+            self.bank.ensure_state(owner)
+        if self._preload_queue:
+            self._preload_timer.start(300)
 
     def _on_state_reloaded(self, state):
-        """v67: 懒状态全量帧表覆盖首帧快路径后复位动画相位，防帧索引越界。"""
+        """v67: After lazy state full frame table overwrites first-frame fast path, reset animation phase to prevent frame index overflow."""
         owner = self.bank.alias.get(state, state)
         if self.bank.alias.get(self.state, self.state) == owner:
             bank = self.bank.frames.get(owner) or []
@@ -1258,18 +1327,18 @@ class PetWindow(QWidget):
                 self.anim_elapsed = 0.0
         self.update()
 
-    # ─────────── 状态切换 ───────────
+    #  --  --  --  --  -- ─ State switching  --  --  --  --  -- ─
     def set_state(self, s, duration=None):
         if s not in ANIMS:
             return
-        self.bank.ensure_state(s)   # v64: 懒状态首次触发→后台异步装载
-        # v67: 懒状态首帧同步快路径——ensure_state 的后台线程需0.5-2s才完成，
-        # 期间旧代码get()返回空图=空白画面。先同步装1帧(<80ms)立即显示。
+        self.bank.ensure_state(s)   # v64: Lazy state first trigger -> background async load
+        # v67: Lazy state first-frame sync fast path  --  ensure_state background thread takes 0.5-2s to complete,
+        # during which old code get() returns empty image = blank screen. Sync-load 1 frame (<80ms) for immediate display.
         if s in self.bank.LAZY:
             self.bank._sync_first_frame(s)
         prev = self.state
-        # 同状态重入（AI续走）：保持步态帧连续，不重置动画相位——
-        # 否则每次AI重新决策都会把frame_idx硬切回0，步态周期性卡顿
+        # Same-state re-entry (AI continue walk): keep gait frame continuity, don't reset animation phase  -- 
+        # otherwise every AI re-decision hard-cuts frame_idx to 0, causing periodic gait stutter
         same_move = (s == prev and s in ('walk', 'run', 'potty_run'))
         self.state = s
         self.state_started = time.perf_counter()
@@ -1278,10 +1347,11 @@ class PetWindow(QWidget):
             self.frame_idx = 0
         self.roll_angle = 0.0
         self.pop_t = 0.0 if same_move else 0.16
-        # 起步预备动作：起跑前先下蹲蓄力
+        # Start antic: crouch before running to build momentum
+        # v96-fix: Reduced from 0.18 to 0.05 - old 0.18s caused "stands still for a few frames before walking"
         if s in ('walk', 'run', 'potty_run') and prev not in ('walk', 'run', 'potty_run'):
-            self.antic_t = 0.18
-        # 停止缓冲：急停时身体前倾挤压
+            self.antic_t = 0.05
+        # Stop settle: forward lean squash on hard stop
         if prev in ('walk', 'run', 'potty_run') and s not in ('walk', 'run', 'potty_run'):
             self.settle_t = 0.28
         if duration:
@@ -1292,7 +1362,7 @@ class PetWindow(QWidget):
             self.particles.emit(ParticleSystem.HEART, CANVAS / 2, 90, 4)
         elif s == 'eat':
             self.say(EAT_TEXT)
-        # v66: LRU touch（当前懒状态移到队尾）+ 超量懒状态卸载回收内存
+        # v66: LRU touch (current lazy state moved to queue tail) + excess lazy state unload to reclaim memory
         owner = self.bank.alias.get(s, s)
         if owner in self.bank.LAZY:
             order = getattr(self.bank, '_loaded_order', [])
@@ -1307,9 +1377,9 @@ class PetWindow(QWidget):
     def say(self, text):
         self.particles.emit(ParticleSystem.BUBBLE, CANVAS / 2, 55, 1, text=text)
 
-    # ─────────── 运动/缓动助手 ───────────
+    #  --  --  --  --  -- ─ Motion/easing helpers  --  --  --  --  -- ─
     def _integrate_vel(self, dt, target, accel, decel):
-        """速度缓动趋近目标，亚像素积分移动窗口（消除抖动与滑步）"""
+        """Velocity-eased approach to target, subpixel integral moves window (eliminates jitter and foot sliding)"""
         rate = accel if abs(target) > 0.5 else decel
         self.vel_x = _approach(self.vel_x, target, rate, dt)
         self.move_acc += self.vel_x * dt
@@ -1317,8 +1387,8 @@ class PetWindow(QWidget):
         if step:
             self.move_acc -= step
             nx = self.x() + step
-            # v10 跳出边框根治：移动一律钳制在屏幕内。
-            # 旧代码逗弄模式追鼠标无边界→狗追到屏幕外，头/尾被屏幕边缘裁掉。
+            # v10 out-of-bounds fix: all movement clamped within screen.
+            # old tease mode chased mouse without bounds -> dog ran off screen, head/tail clipped by screen edge.
             sg = QApplication.primaryScreen().geometry()
             lo, hi = sg.left(), sg.right() - self.width()
             if nx < lo:
@@ -1328,7 +1398,7 @@ class PetWindow(QWidget):
             self.move(nx, self.y())
 
     def _start_turn(self, new_facing):
-        """启动转身动画（减速→转身→再加速，而非瞬间翻转）"""
+        """Start turn animation (decelerate -> turn -> re-accelerate, not instant flip)"""
         if self.turn_phase is not None or new_facing == self.facing:
             return
         self.turn_phase = 0.0
@@ -1337,7 +1407,7 @@ class PetWindow(QWidget):
     def _update_turn(self, dt):
         if self.turn_phase is None:
             return
-        self.turn_phase += dt / 0.22  # v19: 0.45→0.22 竞品式快速转身（纯镜像翻转必须快才自然，慢速+无压缩会显得呆滞）
+        self.turn_phase += dt / 0.22  # v19: 0.45->0.22 competitor-style fast turn (pure mirror flip must be fast to look natural, slow+no compression looks stiff)
         if self.turn_phase >= 0.5 and not self.turn_flipped:
             self.turn_flipped = True
             self.facing = self.turn_new_facing
@@ -1347,14 +1417,14 @@ class PetWindow(QWidget):
             self.turn_flipped = False
 
     def turn_scale(self):
-        """v19已废弃：恒返回1.0。
-        历史：v11用X轴压缩(max 0.35)模拟转身，被用户两次点名批评为"卡片翻转"。
-        现改为竞品式纯镜像翻转——_update_turn在phase=0.5时直接切换flipped，
-        全程无任何X轴缩放，配合0.22s快速转身，观感是狗利落地掉头"""
+        """v19 deprecated: always returns 1.0.
+        History: v11 used X-axis compression (max 0.35) to simulate turn, user twice criticized as "card flip".
+        Now changed to competitor-style pure mirror flip  --  _update_turn switches flipped at phase=0.5,
+        no X-axis scaling at all, with 0.22s fast turn, looks like dog turning crisply"""
         return 1.0
 
     def _update_micro(self, dt):
-        """待机微动作：偶尔歪头/抖毛/小跳，避免木头人站桩"""
+        """Idle micro-action: occasional head tilt/shake/small jump, avoids wooden standing"""
         if self.state in ('idle', 'sit') and not self.dragging:
             if self.micro is None:
                 if random.random() < dt / 6.5:
@@ -1367,17 +1437,17 @@ class PetWindow(QWidget):
         else:
             self.micro = None
 
-    # ─────────── 主循环 ───────────
+    #  --  --  --  --  -- ─ Main loop  --  --  --  --  -- ─
     def game_loop(self):
         now = time.perf_counter()
         dt = min(now - self.last_t, 0.05)
         self.last_t = now
 
-        # 帧推进（步态帧与实际速度同步，防止滑步：速度越慢脚步帧越慢）
+        # Frame advance (gait frames synced with actual speed, prevents foot sliding: slower speed = slower gait frames)
         st_for_frame = self.state
         if st_for_frame in ('walk', 'run', 'potty_run'):
             cruise = 150.0 if st_for_frame != 'walk' else 65.0
-            # 下限0.45：转身减速时动画不再冻结（旧0.12导致0.3秒卡死感）
+            # Floor 0.45: animation doesn't freeze during turn deceleration (old 0.12 caused 0.3s frozen feel)
             frame_speed = max(0.45, min(1.0, abs(self.vel_x) / cruise))
         else:
             frame_speed = 1.0
@@ -1385,13 +1455,13 @@ class PetWindow(QWidget):
         prefix, count, frame_ms, loop, intro = ANIMS[self.state]
         raw_idx = int(self.anim_elapsed / frame_ms)
         if intro > 0 and loop:
-            # intro段只播一次，之后循环主体段
+            # Intro segment plays once, then loops main body
             if raw_idx < intro:
                 self.frame_idx = raw_idx
             else:
                 body_len = count - intro
                 body_idx = raw_idx - intro
-                # 有intro的动作用乒乓循环，避免帧跳变
+                # Actions with intro use ping-pong loop to avoid frame jumps
                 if self.state == 'bath':
                     phase = body_idx % (body_len * 2)
                     if phase < body_len:
@@ -1403,39 +1473,39 @@ class PetWindow(QWidget):
         else:
             self.frame_idx = raw_idx % count if loop else min(raw_idx, count - 1)
 
-        # 腿部装配：步态相位连续累加，频率与实际速度成正比（防滑步）
-        # 注意：walk/run帧本身自带完整步态动画，不需要leg_phase驱动
-        # leg_phase仅用于非步态帧需要腿部摆动的场景
+        # Leg rig: gait phase continuous accumulation, frequency proportional to actual speed (prevents foot sliding)
+        # Note: walk/run frames have built-in complete gait animation, no leg_phase needed
+        # leg_phase only for non-gait frames needing leg swing
         if self.state in ('walk', 'run', 'potty_run'):
-            # 帧自带步态，禁用leg_phase避免双重步态
-            self.leg_amp = max(0.0, self.leg_amp - dt * 12.0)   # 快速停止腿部装配
+            # Frames have built-in gait, disable leg_phase to avoid double gait
+            self.leg_amp = max(0.0, self.leg_amp - dt * 12.0)   # Quick stop leg rig
             if self.leg_amp < 0.01:
                 self.leg_phase = 0.0
         else:
-            self.leg_amp = max(0.0, self.leg_amp - dt * 8.0)   # 停止缓出
+            self.leg_amp = max(0.0, self.leg_amp - dt * 8.0)   # Stop ease-out
 
-        # 运动/过渡计时器
+        # Motion/transition timers
         self.pop_t = max(0.0, self.pop_t - dt)
         self.antic_t = max(0.0, self.antic_t - dt)
         self.settle_t = max(0.0, self.settle_t - dt)
         self._update_turn(dt)
         self._update_micro(dt)
 
-        # 非移动状态的速度衰减（急停后的滑步缓冲效果）
+        # Velocity decay in non-moving state (slide buffer after hard stop)
         if (self.state not in ('walk', 'run', 'potty_run')
                 and not self.physics.active and not self.dragging):
             if abs(self.vel_x) > 2:
                 self._integrate_vel(dt, 0.0, 0.0, 2000.0)
             else:
                 self.vel_x = 0.0
-        # 睡觉时偶尔蹬腿抽搐
+        # Occasional leg kick twitch during sleep
         if self.state == 'sleep':
             self.sleep_twitch_next -= dt
             if self.sleep_twitch_next <= 0:
                 self.sleep_twitch_t = 1.0
                 self.sleep_twitch_next = random.uniform(5, 10)
             self.sleep_twitch_t = max(0.0, self.sleep_twitch_t - dt * 2.5)
-        # 离地高度平滑（EMA ~90ms）：run等状态帧间底边跳动不再直接驱动阴影尺寸
+        # Airborne height smoothing (EMA ~90ms): run etc per-frame bottom jitter no longer directly drives shadow size
         lift_seq = self.bank.lift_map.get(
             self.bank.alias.get(self.state, self.state))
         if lift_seq:
@@ -1452,10 +1522,10 @@ class PetWindow(QWidget):
         self.particles.update(dt)
         self.update_stats(dt)
         self.emit_state_particles(dt)
-        # ── v66 自适应 tick：静态状态降帧省CPU，动作/过渡/粒子活跃保持16ms ──
-        # 源动画均24fps原生(frame_ms≈42-114)，16ms tick重绘一半以上是无效帧。
-        # 静态期 tick=源帧率（源动画本身20fps左右，更高=重绘同一帧纯耗CPU）；
-        # 动作/过渡/粒子/物理/拖拽活跃期=16ms，保证动作质量不掉帧。
+        #  --  v66 adaptive tick: static states reduce frame rate to save CPU, action/transition/particle active stays 16ms  -- 
+        # Source animations are 24fps native (frame_ms~=42-114), 16ms tick redraws over half are wasted frames.
+        # Static period tick = source frame rate (source animation ~20fps, higher = redrawing same frame wastes CPU);
+        # action/transition/particle/physics/drag active period = 16ms, ensures action quality no frame drops.
         moving = self.state in ('walk', 'run', 'potty_run') and abs(self.vel_x) > 2
         active = (self.pop_t > 0 or self.antic_t > 0 or self.settle_t > 0
                   or self.turn_phase is not None or self.micro is not None
@@ -1467,22 +1537,22 @@ class PetWindow(QWidget):
         if tgt != self._tick_cur:
             self._tick_cur = tgt
             self.timer.setInterval(tgt)
-        # v66: 静态且帧未变→跳过重绘（透明窗无变化=零绘制CPU）
+        # v66: static and frame unchanged -> skip redraw (transparent window no change = zero draw CPU)
         if (active or moving
                 or getattr(self, '_last_drawn', None) != (self.state, self.frame_idx, self.flipped)):
             self.update()
 
-    # ─────────── 行为AI ───────────
+    #  --  --  --  --  -- ─ Behavior AI  --  --  --  --  -- ─
     def update_ai(self, dt):
         st = self.state
         st_time = self.state_time()
         sg = QApplication.primaryScreen().geometry()
 
-        # 限时状态结束
+        # Timed statesend
         if st in self.state_duration and st_time > self.state_duration[st]:
             del self.state_duration[st]
-            # v10: 补上'eat'——喂食(duration=6.56)到期后旧代码不转idle，
-            #      狗一直循环吃直到ai_timer偶然到期(最长多卡11秒)
+            # v10: Added 'eat'  --  feeding (duration=6.56) expiry old code didn't return to idle,
+            #      dog kept looping eat until ai_timer happened to expire (stuck up to 11 seconds)
             if st in ('happy', 'roll', 'dance', 'bark', 'lick', 'stretch', 'beg', 'bath', 'eat'):
                 self.set_state('idle')
                 return
@@ -1490,7 +1560,7 @@ class PetWindow(QWidget):
         if self.dragging:
             return
 
-        # ── 逗弄模式：追鼠标（缓动速度+转身动画）──
+        #  --  teaseModes: chase mouse(easedvelocity+turnanimation) -- 
         if self.mode == 'tease':
             cursor = QCursor.pos()
             cx = self.x() + self.width() // 2
@@ -1502,20 +1572,20 @@ class PetWindow(QWidget):
                 if new_facing != self.facing:
                     self._start_turn(new_facing)
                 if self.turn_phase is None:
-                    # 靠近光标时缓出减速，距离越远跑得越快
+                    # Decelerate when approaching cursor, faster when farther away
                     target = new_facing * min(165.0, 35.0 + abs(dx) * 0.75)
                     self._integrate_vel(dt, target, 900.0, 1400.0)
             else:
                 self._integrate_vel(dt, 0.0, 0.0, 2400.0)
                 if st == 'run':
                     self.set_state('idle')
-            # 靠近鼠标时冒爱心
+            # Show hearts when close to mouse
             dist = math.hypot(cursor.x() - cx, cursor.y() - (self.y() + self.height() // 2))
             if dist < 150 and random.random() < dt * 2.5:
                 self.particles.emit(ParticleSystem.HEART, CANVAS / 2, 80, 1)
             return
 
-        # ── 物理运动中 ──
+        #  --  In physical motion  -- 
         if self.physics.active:
             if st != 'surprised':
                 self.set_state('surprised')
@@ -1524,18 +1594,18 @@ class PetWindow(QWidget):
             self.set_state('idle')
             return
 
-        # ── 如厕 ──
+        #  --  Potty  -- 
         if self.potty_need >= 100 and st not in ('potty_run', 'potty'):
             self.set_state('potty_run')
             edge = random.choice([30, sg.right() - self.width() - 30])
             self.roam_target = edge
-            self.say('内急...')
+            self.say('Gotta go...')
             return
 
         if st == 'potty_run':
             tx = self.roam_target
             if tx is None:
-                # 防御：无目标点时就近选屏幕边缘，避免 None 运算崩溃
+                # Defensive: no target point, pick nearest screen edge to avoid None crash
                 tx = self.roam_target = random.choice([30, sg.right() - self.width() - 30])
             if abs(self.x() - tx) < 28:
                 self.state_duration.pop('sit', None)
@@ -1553,25 +1623,25 @@ class PetWindow(QWidget):
             if st_time > 3.0:
                 self.set_state('idle')
                 self.particles.emit(ParticleSystem.SPARKLE, CANVAS / 2, 100, 5)
-                self.say('舒服~')
+                self.say('Much better!')
             return
 
-        # ── 睡觉 ──
+        #  --  Sleep  -- 
         if st == 'sleep':
             if (st_time > 10 and self.energy >= 95) or st_time > 40:
                 self.set_state('idle')
-                self.say('睡醒了!')
+                self.say('Good morning!')
             return
 
         if self.energy < 15 and st == 'idle' and random.random() < dt * 0.5:
             self.set_state('sleep')
-            self.say('困了...')
+            self.say('Getting sleepy...')
             return
 
-        # ── 自动行为计时器 ──
+        #  --  Auto behavior timer  -- 
         self.ai_timer -= dt
         if self.ai_timer > 0:
-            # 行走状态持续移动（速度px/s，带缓动）
+            # Walk state continuous movement (velocity px/s, eased)
             if st == 'walk':
                 self._do_walk(65.0, dt)
             elif st == 'run':
@@ -1580,20 +1650,20 @@ class PetWindow(QWidget):
 
         self.ai_timer = random.uniform(4, 11)
 
-        # v10 动作中断根治：限时动作（跳舞/打滚/舔毛/作揖/洗澡/开心跳等）播放期间
-        #      不允许AI换动作——旧代码ai_timer(4-11s)可能短于表演时长(dance 7.26s)，
-        #      表演中途就被AI强行切走，观感=动作做一半被中断。
-        #      到期后由上方"限时状态结束"分支统一转idle，再走正常决策。
+        # v10 action interruption fix: timed actions (dance/roll/lick/beg/bath/happy etc) during playback
+        #      AI not allowed to switch actions  --  old ai_timer (4-11s) could be shorter than performance duration (dance 7.26s),
+        #      performance cut mid-way by AI, looks = action interrupted half-way.
+        #      after expiry, "timed state ended" branch above uniformly returns to idle, then normal decision.
         if st in self.state_duration:
             return
 
-        # 选择下一个行为
+        # Choose next behavior
         r = random.random()
         if self.mode == 'taskbar':
             if r < 0.42:
                 self.set_state('walk')
                 sg2 = QApplication.primaryScreen().geometry()
-                # 贴墙时强制朝空旷一侧走
+                # When against wall, force walk toward open side
                 if self.x() < 120:
                     self.walk_dir = 1
                 elif self.x() > sg2.right() - self.width() - 120:
@@ -1614,7 +1684,7 @@ class PetWindow(QWidget):
                 self.set_state('roll', duration=10.2)
             else:
                 self.set_state('idle')
-        else:  # desktop — 拖放固定：拖动后固定在当前位置，原地做各种动作，不自动走动
+        else:  # desktop  --  drag-drop fixed: after drag, fixed at current position, does various actions in place, no auto-walking
             if r < 0.30:
                 self.set_state('idle')
             elif r < 0.45:
@@ -1633,8 +1703,8 @@ class PetWindow(QWidget):
     def _do_walk(self, speed, dt):
         sg = QApplication.primaryScreen().geometry()
         if self.mode == 'desktop':
-            # 桌面模式=拖放固定：只在有roam_target时走（如如厕），
-            # 否则原地停止，不自动走动
+            # desktop mode = drag-drop fixed: only walks when there is a roam_target (e.g. potty),
+            # otherwise stops in place, no auto-walking
             if self.roam_target is not None:
                 tx = self.roam_target
                 dist = tx - self.x()
@@ -1652,12 +1722,12 @@ class PetWindow(QWidget):
                 near_speed = min(cruise, max(22.0, abs(dist) * 1.0))
                 self._integrate_vel(dt, new_facing * near_speed, 380.0, 700.0)
             else:
-                # 桌面模式无目标：停止走动，切回idle
+                # desktop mode no target: stop walking, switch to idle
                 self._integrate_vel(dt, 0.0, 0.0, 2600.0)
                 if abs(self.vel_x) < 5:
                     self.set_state('idle')
         else:
-            # 任务栏漫步：边界折返（带转身动画）
+            # Taskbar roaming: bounce at boundaries (with turn animation)
             if self.turn_phase is not None:
                 self._integrate_vel(dt, 0.0, 0.0, 2600.0)
             else:
@@ -1666,7 +1736,7 @@ class PetWindow(QWidget):
             if x <= 0 and self.walk_dir < 0:
                 self.walk_dir = 1
                 self._start_turn(1)
-                self.ai_timer = 0.0   # 贴墙后立即重新决策，避免撞墙呆站
+                self.ai_timer = 0.0   # Re-decide immediately after hitting wall, avoid standing stuck
             elif x >= sg.right() - self.width() and self.walk_dir > 0:
                 self.walk_dir = -1
                 self._start_turn(-1)
@@ -1675,7 +1745,7 @@ class PetWindow(QWidget):
             if x != self.x():
                 self.move(x, self.y())
 
-    # ─────────── 属性 ───────────
+    #  --  --  --  --  -- ─ Properties  --  --  --  --  -- ─
     def update_stats(self, dt):
         self.fullness = max(0, self.fullness - dt * 0.06)
         self.happiness = max(0, self.happiness - dt * 0.04)
@@ -1698,58 +1768,58 @@ class PetWindow(QWidget):
         elif st == 'bath' and random.random() < dt * 3:
             self.particles.emit(ParticleSystem.SPARKLE, CANVAS / 2, 100, 1)
 
-    # ─────────── 绘制（核心：混合渲染） ───────────
+    # ---------- Drawing (core: hybrid rendering) ----------
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        # v25 (P9): 统一缩放——全部绘制逻辑保持CANVAS=320逻辑坐标系，
-        # 一次scale让精灵(已按zoom预渲染)/粒子/气泡同步缩放
+        # v25 (P9): unified zoom -- all drawing logic keeps CANVAS=320 logical coordinate system,
+        # one scale makes sprite (pre-rendered at zoom)/particles/bubble sync-scale
         painter.scale(self.zoom, self.zoom)
 
         now = time.perf_counter()
         t = now - self.state_started
         dx = CANVAS / 2
-        dy = CANVAS - GROUND_PAD  # 脚底锚点
+        dy = CANVAS - GROUND_PAD  # Foot anchor point
 
-        # ── 计算实时变换 ──
-        bob = 0.0          # 垂直浮动
-        rot = 0.0          # 旋转（度）
-        sx, sy = 1.0, 1.0  # 缩放
+        #  --  Calculate real-time transforms  -- 
+        bob = 0.0          # Vertical bob
+        rot = 0.0          # Rotation (degrees)
+        sx, sy = 1.0, 1.0  # Scale
         st = self.state
-        speed_ratio = 1.0  # 速度占巡航速度的比例（调节步幅幅度）
+        speed_ratio = 1.0  # Speed ratio to cruise speed (adjusts stride amplitude)
 
         if st == 'idle' or st == 'sit':
-            # v7: 3D待机动画自带呼吸起伏，程序化浮动已移除（避免"动图悬浮感"）
+            # v7: 3D idle animation has built-in breathing, programmatic bob removed (avoids "floating GIF feel")
             pass
         elif st == 'sleep':
-            # v7.1: 趴卧帧自带呼吸起伏，不再程序化浮动（避免悬浮感）；保留蹬腿抽搐点缀
+            # v7.1: Lying frames have built-in breathing, no more programmatic bob (avoids floating feel); retains leg kick twitch accent
             if self.sleep_twitch_t > 0:
                 tw = self.sleep_twitch_t
                 rot += math.sin(tw * 22) * 1.5 * tw
         elif st in ('walk', 'run', 'potty_run'):
-            # v7: 3D步态动画自带弹跳与真实腿部摆动，程序化只保留速度前倾
+            # v7: 3D gait animation has built-in bounce and real leg swing, programmatic only keeps velocity forward lean
             rot = max(-3.5, min(3.5, self.vel_x * 0.011))
         elif st == 'happy':
-            # v7: Jump_ToIdle动画自带完整跳跃弧线（离地→落地），不再程序化叠加跳跃
+            # v7: Jump_ToIdle animation has built-in full jump arc (liftoff->landing), no more programmatic jump overlay
             pass
         elif st == 'roll':
-            # v7.1: 真3D翻滚已烘焙进帧（Body绕前后轴360°），不再程序化旋转整图
+            # v7.1: True 3D roll baked into frames (Body rotates 360 degrees around front-back axis), no more programmatic whole-image rotation
             bob = -3
         elif st == 'dance':
-            # v7.1: dance真动画（后腿直立+前爪挥舞）已烘焙进帧，不再叠加程序化旋转浮动
+            # v7.1: dance real animation (hind legs upright + front paw wave) baked into frames, no more programmatic rotation/bob overlay
             pass
         elif st == 'eat':
-            # v7: Eating动画自带完整低头进食动作，不再叠加程序化晃动
+            # v7: Eating animation has built-in full head-down eating motion, no more programmatic wobble overlay
             pass
         elif st == 'bark':
-            # v7: Attack动画自带扑咬动作，不再叠加后坐力
+            # v7: Attack animation has built-in lunge-bite motion, no more recoil overlay
             pass
         elif st in ('bath', 'surprised', 'stretch', 'beg', 'lick', 'sit', 'sleep'):
-            # v7.1: 真3D动画（甩水/惊跳/伸懒腰/乞食/舔毛/坐下/睡觉）已烘焙进帧
+            # v7.1: true 3D animations (shake/startle/stretch/beg/lick/sit/sleep) baked into frames
             pass
 
-        # ── 起步预备动作（下蹲蓄力）──
+        #  --  Start antic (crouch to build momentum) -- 
         if self.antic_t > 0:
             p = self.antic_t / 0.18
             sy *= 1.0 - 0.10 * p
@@ -1757,23 +1827,23 @@ class PetWindow(QWidget):
             rot -= self.facing * 3.0 * p
             bob += 2.0 * p
 
-        # ── 急停缓冲（前倾挤压）──
+        #  --  Hard stop settle (forward lean squash) -- 
         if self.settle_t > 0:
             p = self.settle_t / 0.28
             rot += self.facing * 4.5 * p
             sy *= 1.0 - 0.05 * p
 
-        # ── 状态切入弹簧（轻微过冲）──
+        # -- state entry spring (slight overshoot) --
         if self.pop_t > 0:
             p = self.pop_t / 0.16
-            o = math.sin(p * math.pi) * 0.03  # v19: 0.07→0.03 压低入场弹簧过冲，避免跳跃帧头顶被推近窗口上沿(P1)
+            o = math.sin(p * math.pi) * 0.03  # v19: 0.07->0.03 reduce entry spring overshoot, prevents jump frame head pushed near window top (P1)
             sx *= 1.0 + o * 0.6
             sy *= 1.0 + o
 
-        # ── v19: 转身X轴压缩已彻底移除——改为竞品(Deskpet Dog)式纯镜像翻转。
-        # 用户两次点名批评X轴压扁为"卡片翻转"；turn_scale()已废弃(恒返回1.0) ──
+        #  --  v19: Turn X-axis compression completely removed  --  changed to competitor (Deskpet Dog) style pure mirror flip.
+        # User twice criticized X-axis squash as "card flip"; turn_scale() deprecated (always returns 1.0)  -- 
 
-        # ── 待机微动作 ──
+        #  --  Idle micro-actions  -- 
         if self.micro:
             mt = self.micro['t']
             mtype = self.micro['type']
@@ -1790,38 +1860,38 @@ class PetWindow(QWidget):
                     sy *= 1.0 - (hp - 0.85) * 0.6
                     sx *= 1.0 + (hp - 0.85) * 0.5
 
-        # ── 落地挤压（物理）──
+        #  --  Landing squash (physics) -- 
         if self.physics.squash > 0:
             sq = self.physics.squash
             sx *= 1.0 + sq * 0.18
             sy *= 1.0 - sq * 0.22
 
-        # ── 拖拽倾斜 ──
+        # -- drag tilt --
         if self.dragging and len(self.mouse_hist) >= 2:
             (t0, x0, _), (t1, x1, _) = self.mouse_hist[0], self.mouse_hist[-1]
             if t1 > t0:
                 vx = (x1 - x0) / (t1 - t0)
-                rot += max(-8, min(8, vx * 0.012))  # ±8°内不超出窗口余量，避免旋转裁切
+                rot += max(-8, min(8, vx * 0.012))  # Within +/-8 degrees doesn't exceed window margin, avoids rotation clipping
 
-        # ── 图像获取（v25 P2: 动态投影已删除——用户明确要求去掉所有底部影子）──
+        #  --  Image fetch (v25 P2: dynamic shadow removed  --  user explicitly requested no bottom shadows) -- 
         img = self.bank.get(self.state, self.frame_idx, self.flipped)
         if img.isNull():
             painter.end()
             return
 
-        # ── 应用变换绘制 ──
+        # -- apply transforms and draw --
         painter.save()
         painter.translate(dx, dy + bob)
         if rot:
             painter.rotate(rot)
         painter.scale(sx, sy)
 
-        # v64: 脚底锚定比例绘制——tight资产按帧自身w/h等比绘制（画布高=union高，
-        # 帧内无脉动；calm六态基准统一，状态切换无跳变）。
-        # k换算使屏上逻辑尺寸与v63方画布路径逐像素等价：
-        #   tight: 纹理长边=draw×max(w,h)/1024×1.05 → k=DRAW_SIZE/(draw×1.05)，
-        #          屏上高=纹理高×k=h/1024×DRAW_SIZE（1.05纹理过采样不影响几何）
-        #   方画布(walk认可版): k=DRAW_SIZE/draw，与v63的DRAW_SIZE方rect完全一致
+        # v64: bottom-anchored proportional drawing -- tight assets drawn proportionally by frame w/h (canvas height = union height,
+        # no in-frame pulsation; calm six-state baseline unified, no jump on state switch).
+        # k conversion makes screen logical size pixel-equivalent to v63 square canvas path:
+        #   tight: texture long side = draw x max(w,h)/1024 x 1.05 -> k=DRAW_SIZE/(draw x 1.05),
+        #          screen height = texture height x k = h/1024 x DRAW_SIZE (1.05 texture oversampling doesn't affect geometry)
+        #   square canvas (walk approved): k=DRAW_SIZE/draw, identical to v63's DRAW_SIZE square rect
         _owner = self.bank.alias.get(self.state, self.state)
         if _owner in self.bank.TIGHT:
             k = DRAW_SIZE / (self.bank.draw_size * self.bank.ASSET_SCALE)
@@ -1829,18 +1899,18 @@ class PetWindow(QWidget):
             k = DRAW_SIZE / max(96, min(self.bank.draw_size, 1024))
         _iw, _ih = img.width(), img.height()
         draw_rect = QRectF(-_iw * k / 2, -_ih * k + GROUND_PAD, _iw * k, _ih * k)
-        # ── 腿部装配渲染（Paper-Doll Rig）：真实迈步摆动 ──
-        # v19: 素材腿部冻结，运行时把精灵拆成 后腿→身体→前腿 三层，
-        # 绕髋关节钟摆摆动产生真实步态。rig为逐帧列表（跟随frame_idx）。
+        #  --  Leg rig rendering (Paper-Doll Rig): real walking swing  -- 
+        # v19: Source legs frozen, runtime splits sprite into rear-leg -> body -> front-leg three layers,
+        # pendulum swing around hip joint produces real gait. rig is per-frame list (follows frame_idx).
         rig_list = (self.bank.rig_parts_m if self.flipped
                     else self.bank.rig_parts).get(st)
         rig = rig_list[self.frame_idx % len(rig_list)] if rig_list else None
         if rig is not None and self.leg_amp > 0.01:
             top_y = -DRAW_SIZE + GROUND_PAD
             amp = rig['amp_deg'] * self.leg_amp
-            swing_f = math.sin(self.leg_phase) * amp   # 前腿
-            swing_r = -swing_f                          # 后腿反相（小跑步态）
-            # 1) 后腿（最先画，位于身体后方）
+            swing_f = math.sin(self.leg_phase) * amp   # front leg
+            swing_r = -swing_f                          # rear leg opposite phase (trot gait)
+            # 1) Rear leg (drawn first, behind body)
             rp, (rpx, rpy) = rig['rear'], rig['rear_pivot']
             painter.save()
             painter.translate(rig['rear_x0'] - DRAW_SIZE / 2 + rpx,
@@ -1848,11 +1918,11 @@ class PetWindow(QWidget):
             painter.rotate(swing_r)
             painter.drawImage(QRectF(-rpx, -rpy, rp.width(), rp.height()), rp)
             painter.restore()
-            # 2) 身体（覆盖髋部接缝）
+            # 2) Body (covers hip seam)
             body = rig['body']
             painter.drawImage(QRectF(-DRAW_SIZE / 2, top_y,
                                      DRAW_SIZE, body.height()), body)
-            # 3) 前腿（最后画，位于身体前方）
+            # 3) front leg (drawn last, in front of body)
             fp, (fpx, fpy) = rig['front'], rig['front_pivot']
             painter.save()
             painter.translate(rig['front_x0'] - DRAW_SIZE / 2 + fpx,
@@ -1863,18 +1933,18 @@ class PetWindow(QWidget):
         else:
             painter.drawImage(draw_rect, img)
 
-        # ── 呼吸层叠加：v7已禁用 ──
-        # 3D骨骼动画自带真实胸腔起伏，旧2D素材的胸部区域坐标对3D模型错位，
-        # 叠加反而产生贴图撕裂感。此处保留注释说明移除原因。
+        #  --  Breathing layer overlay: v7 disabled  -- 
+        # 3D skeletal animation has real chest rise/fall, old 2D asset chest coordinates misalign with 3D model,
+        # overlay would cause texture tearing. Comment retained to explain removal reason.
 
         painter.restore()
 
-        # ── 粒子 ──
+        #  --  Particles  -- 
         self.particles.draw(painter)
-        self._last_drawn = (self.state, self.frame_idx, self.flipped)  # v66 跳绘标记
+        self._last_drawn = (self.state, self.frame_idx, self.flipped)  # v66 skip-draw marker
         painter.end()
 
-    # ─────────── 交互 ───────────
+    #  --  --  --  --  -- ─ Interaction  --  --  --  --  -- ─
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.dragging = True
@@ -1886,7 +1956,7 @@ class PetWindow(QWidget):
                 sg = QApplication.primaryScreen().geometry()
                 self.floor_y = sg.bottom() - self.height() - 45
                 self.set_state('idle')
-                self.say('抓到我了!')
+                self.say('Got me!')
             else:
                 self.set_state('surprised')
 
@@ -1896,7 +1966,7 @@ class PetWindow(QWidget):
             gp = event.globalPos()
             self.mouse_hist.append((now, gp.x(), gp.y()))
             self.mouse_hist = [h for h in self.mouse_hist if now - h[0] < 0.12]
-            # 拖拽限制在屏幕内：旧代码可拖出屏幕→头/尾被屏幕边缘裁掉
+            # drag clamped within screen: old code could drag off screen -> head/tail clipped by screen edge
             sg = QApplication.primaryScreen().geometry()
             nx = max(0, min(gp.x() - self.drag_off.x(), sg.right() - self.width()))
             ny = max(0, min(gp.y() - self.drag_off.y(), sg.bottom() - self.height()))
@@ -1905,13 +1975,13 @@ class PetWindow(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.dragging:
             self.dragging = False
-            # 桌面拖放固定模式：拖放后固定在当前位置，不触发抛掷物理
+            # desktop drag-drop fixed mode: fixed at current position after drop, no throw physics
             if self.mode == 'desktop':
                 self.set_state('idle')
                 self.happiness = min(100, self.happiness + 3)
                 self.particles.emit(ParticleSystem.HEART, CANVAS / 2, 90, 2)
                 return
-            # 计算抛掷速度
+            # Calculate throw velocity
             if len(self.mouse_hist) >= 2:
                 (t0, x0, y0), (t1, x1, y1) = self.mouse_hist[0], self.mouse_hist[-1]
                 dt = t1 - t0
@@ -1932,53 +2002,54 @@ class PetWindow(QWidget):
 
     def mouseDoubleClickEvent(self, event):
         trick = random.choice(['happy', 'roll', 'dance', 'bark'])
-        # 各绝活时长对齐循环周期整数倍（happy为一次性），避免结束中途硬切
+        # Each trick duration aligned to integer multiple of loop period (happy is one-shot), avoids hard cut mid-action
         self.set_state(trick, duration={'happy': 5.1, 'roll': 10.2,
                                         'dance': 10.3, 'bark': 5.1}[trick])
         self.happiness = min(100, self.happiness + 6)
 
     def contextMenuEvent(self, event):
-        # v67: 自绘圆角菜单——macOS 下 QMenu+border-radius 圆角外渲染白底，
-        # QPainterPath 自绘 popup 与主窗口同机制，Windows/macOS 像素级一致。
+        # v67: Self-drawn rounded menu  --  macOS QMenu+border-radius renders white outside rounded corners,
+        # QPainterPath self-drawn popup same mechanism as main window, Windows/macOS pixel-identical.
         menu = RoundedMenu(self)
 
         tease_key = 'tease'
-        menu.add_item(tease_key, '🐾 退出逗弄' if self.mode == 'tease' else '🐾 逗逗我')
+        menu.add_item(tease_key, '🐾 Stop Teasing' if self.mode == 'tease' else '🐾 Tease Me')
         menu.add_sep()
-        menu.add_item('feed', '🍖 喂食')
-        menu.add_item('pet', '🤚 摸摸头')
+        menu.add_item('feed', '🍖 Feed')
+        menu.add_item('pet', '🤚 Pet Me')
         menu.add_sep()
         trick_menu = RoundedMenu(self)
-        trick_menu.add_item('happy', '开心跳跃')
-        trick_menu.add_item('roll', '打滚')
-        trick_menu.add_item('dance', '跳舞')
-        trick_menu.add_item('bark', '叫一声')
-        trick_menu.add_item('lick', '舔毛')
-        trick_menu.add_item('beg', '作揖')
-        trick_menu.add_item('bath', '洗澡')
-        trick_menu.add_item('wave', '挥挥手')
-        trick_menu.add_item('stretch', '伸懒腰')
-        trick_menu.add_item('surprised', '惊讶')
-        trick_menu.add_item('kiss', '亲亲我')
-        trick_menu.add_item('type', '敲键盘')
-        trick_menu.add_item('walk', '散步')
-        menu.add_sub('🎪 表演', trick_menu)
+        trick_menu.add_item('happy', 'Happy Jump')
+        trick_menu.add_item('roll', 'Roll Over')
+        trick_menu.add_item('dance', 'Dance')
+        trick_menu.add_item('bark', 'Bark')
+        trick_menu.add_item('lick', 'Lick Fur')
+        trick_menu.add_item('beg', 'Beg')
+        trick_menu.add_item('bath', 'Bath')
+        trick_menu.add_item('wave', 'Wave')
+        trick_menu.add_item('stretch', 'Stretch')
+        trick_menu.add_item('surprised', 'Surprised')
+        trick_menu.add_item('kiss', 'Kiss')
+        trick_menu.add_item('type', 'Type')
+        trick_menu.add_item('play_dead', 'Play Dead')
+        trick_menu.add_item('walk', 'Walk')
+        menu.add_sub('🎪 Tricks', trick_menu)
         menu.add_sep()
         size_menu = RoundedMenu(self)
-        size_menu.add_item('zoom_up', '➕ 放大')
-        size_menu.add_item('zoom_down', '➖ 缩小')
-        size_menu.add_item('zoom_reset', '↩ 重置')
-        menu.add_sub('🔍 大小', size_menu)
+        size_menu.add_item('zoom_up', '➕ Bigger')
+        size_menu.add_item('zoom_down', '➖ Smaller')
+        size_menu.add_item('zoom_reset', '↩ Reset')
+        menu.add_sub('🔍 Size', size_menu)
         menu.add_sep()
         mode_menu = RoundedMenu(self)
-        mode_menu.add_item('mode_taskbar', '任务栏漫步')
-        mode_menu.add_item('mode_desktop', '拖放固定')
-        menu.add_sub('📍 模式', mode_menu)
+        mode_menu.add_item('mode_taskbar', 'Taskbar Roam')
+        mode_menu.add_item('mode_desktop', 'Desktop Fixed')
+        menu.add_sub('📍 Mode', mode_menu)
         menu.add_sep()
-        menu.add_item('sleep', '💤 去睡觉')
-        menu.add_item('stats', '📊 查看状态')
+        menu.add_item('sleep', '💤 Sleep')
+        menu.add_item('stats', '📊 Stats')
         menu.add_sep()
-        menu.add_item('quit', '❌ 退出')
+        menu.add_item('quit', '❌ Quit')
 
         action = menu.exec_menu(event.globalPos())
         if action is None:
@@ -1993,14 +2064,14 @@ class PetWindow(QWidget):
             else:
                 self.mode = 'tease'
                 self.set_state('run')
-                self.say('来抓我呀!')
+                self.say('Catch me!')
         elif action == 'feed':
             self.set_state('eat', duration=6.56)
             self.fullness = min(100, self.fullness + 20)
             self.happiness = min(100, self.happiness + 5)
         elif action == 'pet':
             self.happiness = min(100, self.happiness + 10)
-            # v57: 摸摸头=独立pet互动(人手抚摸+小狗享受)，与舔毛lick区分
+            # v57: Pet head = independent pet interaction (hand stroke + dog enjoying), distinct from lick grooming
             self.set_state('pet', duration=4.6)
         elif action == 'happy':
             self.set_state('happy', duration=5.1)
@@ -2026,15 +2097,17 @@ class PetWindow(QWidget):
             self.set_state('kiss', duration=5.1)
         elif action == 'type':
             self.set_state('type', duration=3.6)
+        elif action == 'play_dead':
+            self.set_state('play_dead', duration=5.1)
         elif action == 'walk':
-            # 表演散步：设定方向和时长，让狗走起来
+            # Perform walk: set direction and duration, make the dog walk
             self.walk_dir = random.choice([-1, 1])
             self._start_turn(self.walk_dir)
             if self.turn_phase is None:
                 self.facing = self.walk_dir
                 self.flipped = self.facing < 0
             self.set_state('walk')
-            self.ai_timer = random.uniform(6, 12)  # 走6-12秒
+            self.ai_timer = random.uniform(6, 12)  # walk 6-12 seconds
         elif action == 'mode_taskbar':
             self.mode = 'taskbar'
             sg = QApplication.primaryScreen().geometry()
@@ -2043,30 +2116,30 @@ class PetWindow(QWidget):
             self.set_state('idle')
         elif action == 'mode_desktop':
             self.mode = 'desktop'
-            self.roam_target = None  # 不自动走动，等用户拖动
+            self.roam_target = None  # No auto-walking, wait for user drag
             self.set_state('idle')
-            self.say('拖我到任意位置!')
+            self.say('Drag me anywhere!')
         elif action == 'zoom_up':
             self.set_zoom(self.zoom + ZOOM_STEP)
-            self.say(f'大小 {self.zoom:.2f}x')
+            self.say(f'Size {self.zoom:.2f}x')
         elif action == 'zoom_down':
             self.set_zoom(self.zoom - ZOOM_STEP)
-            self.say(f'大小 {self.zoom:.2f}x')
+            self.say(f'Size {self.zoom:.2f}x')
         elif action == 'zoom_reset':
             self.set_zoom(ZOOM_DEFAULT)
-            self.say('恢复默认大小')
+            self.say('Reset to default size')
         elif action == 'sleep':
             self.set_state('sleep')
         elif action == 'stats':
-            self.say(f'饱食{int(self.fullness)} 开心{int(self.happiness)} '
-                      f'精力{int(self.energy)}')
+            self.say(f'Full{int(self.fullness)} Happy{int(self.happiness)} '
+                      f' Energy{int(self.energy)}')
             self.particles.emit(ParticleSystem.SPARKLE, CANVAS / 2, 70, 4)
         elif action == 'quit':
             QApplication.quit()
 
 
 def _install_excepthook():
-    """打包后（console=False）没有stderr，异常必须写日志，否则静默死亡"""
+    """After packaging (console=False) no stderr, exceptions must write to log or die silently"""
     import traceback
 
     def hook(exc_type, exc_value, exc_tb):
@@ -2086,12 +2159,12 @@ def _install_excepthook():
     sys.excepthook = hook
 
 
-_pet_window = None  # 必须全局持有引用，防止窗口被GC销毁
-_singleton_mutex = None  # 必须全局持有，防止互斥锁被GC提前释放
+_pet_window = None  # Must hold reference globally, prevent window GC destruction
+_singleton_mutex = None  # Must hold globally, prevent mutex GC early release
 
 
 def _acquire_single_instance():
-    """Windows命名互斥锁：防止用户双击多次导致多只金毛犬/僵尸进程"""
+    """Windows named mutex: prevents multiple pet instances/zombie processes from double-clicking"""
     if sys.platform != 'win32':
         return True
     import ctypes
@@ -2100,13 +2173,13 @@ def _acquire_single_instance():
     _singleton_mutex = kernel32.CreateMutexW(None, False, PET_NAME_ASCII + '_V1_Singleton')
     ERROR_ALREADY_EXISTS = 183
     if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
-        return False  # 已有实例在运行
+        return False  # Instance already running
     return True
 
 
 def _find_existing_window():
-    """枚举顶层窗口找宠物窗口：优先精确标题，其次匹配历史版本标题前缀。
-    （旧版本EXE的窗口标题是PyInstaller按EXE名设置的"金毛犬桌面宠物vN"）"""
+    """Enumerate top-level windows to find pet window: prefer exact title, then match historical version title prefix.
+    (Old version EXE window title was set by PyInstaller from EXE name "Golden Retriever Desktop Pet vN")"""
     import ctypes
     import ctypes.wintypes as wt
     user32 = ctypes.windll.user32
@@ -2121,7 +2194,7 @@ def _find_existing_window():
         if n:
             buf = ctypes.create_unicode_buffer(n + 1)
             user32.GetWindowTextW(hwnd, buf, n + 1)
-            if buf.value.startswith(PET_NAME):  # 从CONFIG派生：匹配本宠物EXE窗口标题前缀
+            if buf.value.startswith(PET_NAME):  # Derived from CONFIG: matches this pet's EXE window title prefix
                 found.append(hwnd)
         return True
 
@@ -2130,8 +2203,8 @@ def _find_existing_window():
 
 
 def _activate_existing_instance():
-    """已有实例在运行时：把它的窗口带到前台，让用户看到"宠物已在运行"。
-    旧版直接静默退出 → 用户双击毫无反馈，以为程序坏了。"""
+    """When instance already running: bring its window to foreground, let user see \"pet already running\".
+    Old version silently exited -> user got no feedback from double-click, thought program broken."""
     if sys.platform != 'win32':
         return
     import ctypes
@@ -2139,12 +2212,12 @@ def _activate_existing_instance():
     hwnd = _find_existing_window()
     if not hwnd:
         return
-    SW_RESTORE = 9          # 若被最小化则还原
-    SW_SHOWNOACTIVATE = 4   # 显示但不抢焦点（宠物窗口本来就不激活）
+    SW_RESTORE = 9          # Restore if minimized
+    SW_SHOWNOACTIVATE = 4   # Show without stealing focus (pet window never activates)
     user32.ShowWindow(hwnd, SW_RESTORE)
     user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
-    # 置顶窗口（WindowStaysOnTopHint）可能被其他置顶窗口压住，
-    # SetForegroundWindow 对非前台进程受限，用 AttachThreadInput 提权
+    # Top window (WindowStaysOnTopHint) may be overridden by other top windows,
+    # SetForegroundWindow restricted for non-foreground processes, use AttachThreadInput for privilege
     kernel32 = ctypes.windll.kernel32
     fore_thread = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
     app_thread = kernel32.GetCurrentThreadId()
@@ -2157,8 +2230,8 @@ def _activate_existing_instance():
 
 
 def _is_window_responsive(hwnd, timeout_ms=1500):
-    """v66-fix: 用 SendMessageTimeout(SMTO_ABORTIFHUNG) 探测旧实例消息队列是否存活。
-    旧实例事件循环卡死（僵尸）时该调用立即失败返回，不会阻塞本进程。"""
+    """v66-fix: Use SendMessageTimeout(SMTO_ABORTIFHUNG) to probe old instance message queue liveness.
+    If old instance event loop is frozen (zombie), call fails immediately without blocking this process."""
     import ctypes
     SMTO_ABORTIFHUNG = 0x0002
     result = ctypes.c_long()
@@ -2168,7 +2241,7 @@ def _is_window_responsive(hwnd, timeout_ms=1500):
 
 
 def _kill_process_of_hwnd(hwnd):
-    """v66-fix: 终止僵死旧实例进程（释放单例锁），不碰本进程"""
+    """v66-fix: Terminate zombie old instance process (release singleton lock), don't touch this process"""
     import ctypes
     pid = ctypes.c_ulong()
     ctypes.windll.user32.GetWindowThreadProcessId(int(hwnd), ctypes.byref(pid))
@@ -2185,9 +2258,9 @@ def _kill_process_of_hwnd(hwnd):
 
 
 def _release_singleton_mutex():
-    """v66-fix: 关闭本进程持有的mutex句柄。
-    内核mutex对象在所有句柄关闭后才销毁——若不先关自己的首次句柄，
-    杀死旧进程后第二次CreateMutexW仍返回ALREADY_EXISTS（误判接管失败）。"""
+    """v66-fix: Close this process's mutex handle.
+    Kernel mutex object destroyed only after all handles closed  --  if don't close own first handle,
+    after killing old process second CreateMutexW still returns ALREADY_EXISTS (false takeover failure)."""
     global _singleton_mutex
     if _singleton_mutex:
         import ctypes
@@ -2198,9 +2271,9 @@ def _release_singleton_mutex():
 def main():
     global _pet_window
     _install_excepthook()
-    # v69-fix: C 级崩溃（Qt C++ abort/段错误/栈溢出）不经过 excepthook、不留任何日志，
-    # 进程"静默消失"。faulthandler 注册原生信号处理，把 traceback 写进 crash.log，
-    # 下次再复现即可定位。句柄全局持有防GC。
+    # v69-fix: C-level crash (Qt C++ abort/segfault/stack overflow) doesn't go through excepthook, leaves no log,
+    # process "silently disappears". faulthandler registers native signal handlers, writes traceback to crash.log,
+    # reproduce next time to locate. Handle held globally to prevent GC.
     global _crash_fh
     try:
         import faulthandler
@@ -2214,26 +2287,26 @@ def main():
     except Exception:
         _crash_fh = None
     if not _acquire_single_instance():
-        # v66-fix: 旧实例存在时先探活——响应正常才"激活已有窗口"；
-        # 僵死（事件循环卡死）则终止旧进程接管启动，
-        # 根治"新EXE永远只激活僵死旧窗口、用户看到狗不动"的死循环。
+        # v66-fix: When old instance exists, probe liveness first  --  only "activate existing window" if responsive;
+        # if zombie (event loop frozen) terminate old process and take over startup,
+        # fixes "new EXE always activates zombie old window, user sees frozen dog" dead loop.
         hwnd = _find_existing_window()
         if hwnd and _is_window_responsive(hwnd):
             _activate_existing_instance()
             return
         took_over = False
         if hwnd and _kill_process_of_hwnd(hwnd):
-            time.sleep(0.6)  # 等旧进程释放mutex
-            _release_singleton_mutex()  # 关本进程句柄，内核对象才销毁
+            time.sleep(0.6)  # Wait for old process to release mutex
+            _release_singleton_mutex()  # Close this process handle, kernel object then destroyed
             took_over = _acquire_single_instance()
         if not took_over:
             _activate_existing_instance()
             return
-    # 高DPI支持：必须在QApplication创建前设置
-    # v49-fix: PassThrough 舍入策略——用监视器真实缩放(如1.5x)，不做整数舍入。
-    # 根治 Windows 高缩放下"后缓冲尺寸≠物理窗口尺寸"的合成错位（黑屏/狗碎片）：
-    # 默认Round把1.5x舍入成2.0，后缓冲640px被合成进~427px窗口→裁切+偏移。
-    # (实测本机不支持SetProcessDpiAwarenessContext，err=87，勿再加原生DPI调用)
+    # HiDPI support: must set before QApplication creation
+    # v49-fix: PassThrough rounding policy -- use monitor real scale (e.g. 1.5x), no integer rounding.
+    # fixes Windows high-scale "back-buffer size != physical window size" compositing misalignment (black screen/pet fragments):
+    # Default Round rounds 1.5x to 2.0, back-buffer 640px composited into ~427px window -> clipping+offset.
+    # (Tested: SetProcessDpiAwarenessContext unsupported on this machine, err=87, don't add native DPI calls)
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
