@@ -71,12 +71,6 @@ jobs:
           git commit -m "CI: build failure log (${{ matrix.arch }})" || true
           git push -f origin ci-logs-GoldenVestPet-${{ matrix.arch }} || true
 
-      - name: Ad-hoc codesign（单架构sign first，keep slice valid；merge后还会then签一次）
-        continue-on-error: true
-        run: |
-          codesign --force --deep --sign - "dist/GoldenVestPet.app" || true
-          codesign -dv "dist/GoldenVestPet.app" 2>&1 | head -5 || true
-
       - name: Upload .app artifact（tar package：upload-artifact的zip compression breaks.app内的symlinkand doesn't keep directory itself，must tar to preserve symlinks；rename to arch name first，otherwise两tar解包同名互覆）
         run: |
           export COPYFILE_DISABLE=1   # prevent macOS tar inserting._metadata files polluting bundle
@@ -120,13 +114,6 @@ jobs:
         run: |
           ls apps/
           bash merge_universal.sh apps/arm64.app apps/x86_64.app "GoldenVestPet.app"
-
-      - name: Ad-hoc codesign（must！lipomerge破坏签名，not re-sign=report"已损坏"）
-        continue-on-error: true
-        run: |
-          codesign --force --deep --sign - "GoldenVestPet.app" || true
-          codesign -dv "GoldenVestPet.app" 2>&1 | head -5 || true
-          codesign --verify --deep --strict "GoldenVestPet.app" || echo "签名verification skipped (non-critical)"
 
       - name: 一键打开脚本（朋友双击即用：auto-install toApplications+clear quarantine+launch）
         # Key细节：DMG volume is read-only，script must cp to/Applicationsthenxattr，clearing in-volume fails silently
