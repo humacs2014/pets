@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
-# macOS打包spec — 输出 .app bundle（必须在macOS上执行）
-# 优化：排除不需要模块、optimize=2、strip=True
+# macOS build spec — outputs .app bundle (must run on macOS)
+# Optimized: excludes unneeded modules, optimize=2, strip=True
 a = Analysis(
     ['pet_engine.py'],
     pathex=[],
@@ -11,7 +11,7 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # PyQt5不需要的子模块
+        # Unneeded PyQt5 submodules
         'PyQt5.QtBluetooth', 'PyQt5.QtDBus', 'PyQt5.QtDesigner',
         'PyQt5.QtHelp', 'PyQt5.QtLocation', 'PyQt5.QtMultimedia',
         'PyQt5.QtMultimediaWidgets', 'PyQt5.QtNetwork', 'PyQt5.QtNfc',
@@ -21,28 +21,37 @@ a = Analysis(
         'PyQt5.QtSvg', 'PyQt5.QtTest', 'PyQt5.QtWebChannel',
         'PyQt5.QtWebEngine', 'PyQt5.QtWebSockets', 'PyQt5.QtXml',
         'PyQt5.QtXmlPatterns', 'PyQt5.QtChart',
-        # Python不需要的标准库（zipfile/zlib/json/urllib/logging/email等被PyInstaller运行时钩子间接依赖，不能排除）
+        # Unneeded stdlib (zipfile/zlib/json/urllib/logging/email are indirectly required by PyInstaller runtime hooks, do NOT exclude)
         'asyncio', 'concurrent', 'csv', 'dbm', 'distutils',
         'ftplib', 'gettext', 'imaplib', 'lib2to3',
         'mailbox', 'multiprocessing', 'pydoc', 'pydoc_data',
         'smtplib', 'socketserver', 'sqlite3',
         'tkinter', 'turtle', 'unittest',
-        'xmlrpc',
+        'xmlrpc', 'ensurepip', 'pip', 'setuptools',
+        'pkg_resources', 'wheel', 'platformdirs',
+        # Heavy libraries not used by pet engine
+        'numpy', 'pandas', 'scipy', 'matplotlib',
+        'PIL', 'numpy.core', 'numpy.fft', 'numpy.linalg',
+        'numpy.ma', 'numpy.matrixlib', 'numpy.polynomial',
+        'numpy.random', 'numpy.testing',
+        'sympy', 'IPython', 'jupyter', 'notebook',
+        'tornado', 'zmq', 'jedi', 'parso',
+        'cryptography', 'OpenSSL', 'cffi', 'pycparser',
     ],
     noarchive=False,
-    optimize=2,  # 字节码优化级别2
+    optimize=2,  # Bytecode optimization level 2
 )
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
     [],
-    exclude_binaries=True,        # BUNDLE模式：binaries放进.app而非单文件
-    name='金毛背心',
+    exclude_binaries=True,        # BUNDLE mode: binaries go into .app, not single file
+    name='GoldenVestPet',
     debug=False,
     bootloader_ignore_signals=False,
-    strip=True,                   # 去除调试符号
-    upx=False,                    # macOS上UPX容易破坏Mach-O签名结构，必须关闭
+    strip=True,                   # Remove debug symbols
+    upx=False,                    # UPX breaks Mach-O signature structure on macOS, must be off
     console=False,
     target_arch=None,
     codesign_identity=None,
@@ -52,11 +61,11 @@ coll = BUNDLE(
     exe,
     a.binaries,
     a.datas,
-    name='金毛背心.app',
-    icon='app.icns',              # 需在macOS上用 sips/iconutil 从 icon.png 生成
+    name='GoldenVestPet.app',
+    icon='app.icns',              # Generate from icon.png on macOS using sips/iconutil
     bundle_identifier='com.goldenvest.pet',
     info_plist={
-        'CFBundleDisplayName': '金毛背心',
+        'CFBundleDisplayName': 'Golden Vest Puppy',
         'CFBundleName': 'GoldenVestPet',
         'CFBundleShortVersionString': '1.0',
         'NSHighResolutionCapable': True,
