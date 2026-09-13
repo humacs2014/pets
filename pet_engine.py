@@ -522,27 +522,32 @@ class SpriteBank:
                 self.alias[state] = owner
                 self.geo.setdefault(state, self.geo.get(owner, (1024, 1024)))
         #  --  Loading: aliases point to owner list; lazy states placeholder empty tables loaded on first trigger  -- 
-        # v67 startup fast path: FAST_BOOT four states main thread sync limited-frame load (first screen <300ms),
-        # remaining resident states built in background by caller then swap-installed.
-        fast = getattr(self, 'fast_boot', False)
+        # v99b: ALL states are LAZY. idle sync-loads only frame 0 for first screen (<10ms),
+        # then startup preload queue loads everything in background.
         for state in ANIMS:
             if state in self.alias:
                 owner = self.alias[state]
                 self.frames[state] = self.frames[owner]
                 self.frames_m[state] = self.frames_m[owner]
                 self.lift_map[state] = self.lift_map[owner]
-            elif state in self.LAZY:
+            else:
                 self.frames[state] = []
                 self.frames_m[state] = []
                 self.lift_map[state] = []
-            elif fast:
-                # v96-fix: Resident states sync-loaded with ALL frames (not 30) to eliminate
-                # the 30-frame -> 121-frame swap jitter. Modern CPUs decode 121 WebP <50ms.
-                # Old fast_boot loaded only 30 frames, then _on_fullbank_loaded swapped to 121,
-                # resetting frame_idx=0 mid-animation = visible jitter/stutter.
-                self._load_state(state)
-            else:
-                self._load_state(state)
+        # Sync-load idle frame 0 only (first screen, <10ms)
+        idle_prefix = ANIMS['idle'][0]
+        fn0 = os.path.join(base, f'{idle_prefix}_000.webp')
+        if not os.path.exists(fn0):
+            fn0 = os.path.join(base, f'{idle_prefix}_000.png')
+        if os.path.exists(fn0):
+            img = QImage(fn0)
+            if not img.isNull():
+                img = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
+                draw = self._state_draw('idle')
+                img = img.scaled(draw, draw, Qt.KeepAspectRatio, Qt.FastTransformation)
+                self.frames['idle'] = [img]
+                self.frames_m['idle'] = [None]
+                self.lift_map['idle'] = [0.0]
         # v19: Per-frame leg cutting  --  run frames contain gallop jumps (per-frame body_bot displacement up to 31px),
         # fixed cut line (only frame 0) misaligns leg blocks on jump frames. Cut per-frame by own body bottom,
         # preserving in-frame gallop undulation while keeping cut line aligned with body.
@@ -572,9 +577,8 @@ class SpriteBank:
             self.rig_parts_m[state] = parts_m
 
     def _sync_first_frame(self, state):
-        """v99: Load all frames synchronously. With background preload running,
-        most states are already loaded before user triggers them.
-        This is the fallback for states not yet preloaded."""
+        """v99b: DEPRECATED — do not call from main thread. All loading is async via ensure_state -> _StateLoadThread.
+        Only kept as internal helper for background preload queue."""
         owner = self.alias.get(state, state)
         if owner not in self.LAZY:
             return
@@ -593,20 +597,16 @@ class SpriteBank:
                 self._loaded_order.append(owner)
 
     def ensure_state(self, state):
-        """v99: Lazy state first trigger -> sync 5 frames for immediate display,
-        then background thread loads all frames and atomically overwrites."""
-        if state not in self.LAZY or self.frames.get(state):
+        """v99b: Pure async — start background thread to load frames.
+        Main thread never blocks. get() returns empty QImage while loading."""
+        owner = self.alias.get(state, state)
+        if owner not in self.LAZY or self.frames.get(owner):
             return
-        if state in self._lazy_threads:
+        if owner in self._lazy_threads:
             return
-        self._sync_first_frame(state)
-        # Check if sync already loaded ALL frames (only possible for short animations)
-        _, total_count, _, _, _ = ANIMS.get(state, (None, 0, 0, True, 0))
-        if self.frames.get(state) and len(self.frames[state]) >= total_count:
-            return  # Already fully loaded
-        t = _StateLoadThread(self, state)
-        self._lazy_threads[state] = t
-        t.finished.connect(lambda s=state, th=t: self._on_lazy_done(s, th))
+        t = _StateLoadThread(self, owner)
+        self._lazy_threads[owner] = t
+        t.finished.connect(lambda s=owner, th=t: self._on_lazy_done(s, th))
         t.start()
 
     def _on_lazy_done(self, state, t):
@@ -685,10 +685,10 @@ class SpriteBank:
                 sc = draw / float(max(w, h))
                 img = img.scaled(max(2, int(round(w * sc))),
                                  max(2, int(round(h * sc))),
-                                 Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                                 Qt.KeepAspectRatio, Qt.FastTransformation)
             else:
                 img = img.scaled(draw, draw,
-                                  Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                                  Qt.KeepAspectRatio, Qt.FastTransformation)
             imgs.append(img)
         if not tight and imgs:
             # v49: Mirror lazy generation  --  get() mirrors centered draw x draw canvas on first request
@@ -1179,7 +1179,7 @@ class PetWindow(QWidget):
         self.show()
 
         # v99: Background-preload lazy states after startup (walk/run/eat etc)
-        QTimer.singleShot(1000, self._start_lazy_preload)
+        QTimer.singleShot(50, self._start_lazy_preload)
 
         # v25 (P1): Visibility guard  --  whatever causes window hide/minimize, force restore within 2s.
         # Pet persists on desktop: only right-click menu "Exit" can truly close it.
@@ -1289,53 +1289,71 @@ class PetWindow(QWidget):
         # This eliminates startup IO/CPU spike that caused first-open stutter.
 
     def _start_lazy_preload(self):
-        """v99: After idle loads, background-preload all lazy states one-by-one (300ms gap)
-        so user triggers find frames already loaded — no first-trigger stutter."""
-        states = [s for s in ANIMS if s in self.bank.LAZY and not self.bank.frames.get(s)]
+        """v99b: Parallel background preload — spawn 3 threads at a time for all lazy states.
+        With FastTransformation, each state loads in ~50-100ms, so 3 parallel threads
+        finish all 20 states in ~1 second total."""
+        states = [s for s in ANIMS if s not in self.alias and not self.frames.get(s)]
         if not states:
             return
         # Prioritize common interaction states first
-        priority = ['walk', 'run', 'bark', 'sit', 'sleep', 'eat', 'lick',
+        priority = ['idle', 'walk', 'run', 'bark', 'sit', 'sleep', 'eat', 'lick',
                     'happy', 'pet', 'stretch', 'dance', 'beg', 'bath',
                     'play_dead', 'surprised', 'kiss', 'wave', 'type', 'roll']
         ordered = [s for s in priority if s in states] + [s for s in states if s not in priority]
         self._preload_queue = ordered
-        self._preload_timer = QTimer(self)
-        self._preload_timer.setSingleShot(True)
-        self._preload_timer.timeout.connect(self._preload_next)
-        self._preload_timer.start(500)  # first preload 500ms after startup
+        self._preload_parallel = 3
+        # Launch initial batch
+        for _ in range(min(self._preload_parallel, len(self._preload_queue))):
+            self._preload_launch_next()
 
-    def _preload_next(self):
-        """Load one lazy state at a time, then queue the next."""
+    def _preload_launch_next(self):
+        """Launch one background thread for next state in queue."""
         if not getattr(self, '_preload_queue', None):
             return
         state = self._preload_queue.pop(0)
         owner = self.bank.alias.get(state, state)
-        if not ((self.bank.frames.get(owner) and len(self.bank.frames[owner]) > 1) or
-                owner in self.bank._lazy_threads):
-            self.bank.ensure_state(owner)
-        if self._preload_queue:
-            self._preload_timer.start(300)
+        if not (self.bank.frames.get(owner) or owner in self.bank._lazy_threads):
+            t = _StateLoadThread(self.bank, owner)
+            self.bank._lazy_threads[owner] = t
+            t.finished.connect(lambda s=owner, th=t: self._on_preload_done(s, th))
+            t.start()
+
+    def _on_preload_done(self, state, t):
+        """Preload thread finished: write frames + launch next in queue."""
+        self.bank._lazy_threads.pop(state, None)
+        if t.imgs is not None:
+            bank = self.bank
+            while getattr(bank, '_replaced_by', None) is not None:
+                bank = bank._replaced_by
+            bank.frames[state] = t.imgs
+            bank.frames_m[state] = [None] * len(t.imgs)
+            bank.lift_map[state] = t.lift
+            bank._loaded_order = getattr(bank, '_loaded_order', [])
+            if state not in bank._loaded_order:
+                bank._loaded_order.append(state)
+            # Notify window if this is current state
+            if hasattr(self, 'state') and self.bank.alias.get(self.state, self.state) == state:
+                self._on_state_reloaded(state)
+            self.update()
+        t.deleteLater()
+        # Launch next in queue
+        if getattr(self, '_preload_queue', None):
+            self._preload_launch_next()
 
     def _on_state_reloaded(self, state):
-        """v67: After lazy state full frame table overwrites first-frame fast path, reset animation phase to prevent frame index overflow."""
+        """v99b: After background load completes, reset animation phase so it starts from frame 0."""
         owner = self.bank.alias.get(state, state)
         if self.bank.alias.get(self.state, self.state) == owner:
-            bank = self.bank.frames.get(owner) or []
-            if bank and self.frame_idx >= len(bank):
-                self.frame_idx = 0
-                self.anim_elapsed = 0.0
+            self.frame_idx = 0
+            self.anim_elapsed = 0.0
         self.update()
 
     #  --  --  --  --  -- ─ State switching  --  --  --  --  -- ─
     def set_state(self, s, duration=None):
         if s not in ANIMS:
             return
-        self.bank.ensure_state(s)   # v64: Lazy state first trigger -> background async load
-        # v67: Lazy state first-frame sync fast path  --  ensure_state background thread takes 0.5-2s to complete,
-        # during which old code get() returns empty image = blank screen. Sync-load 1 frame (<80ms) for immediate display.
-        if s in self.bank.LAZY:
-            self.bank._sync_first_frame(s)
+        self.bank.ensure_state(s)   # v99b: Pure async — background thread loads, get() returns empty during load
+        # No sync loading on main thread — eliminates first-trigger freeze
         prev = self.state
         # Same-state re-entry (AI continue walk): keep gait frame continuity, don't reset animation phase  -- 
         # otherwise every AI re-decision hard-cuts frame_idx to 0, causing periodic gait stutter
@@ -1876,8 +1894,13 @@ class PetWindow(QWidget):
         #  --  Image fetch (v25 P2: dynamic shadow removed  --  user explicitly requested no bottom shadows) -- 
         img = self.bank.get(self.state, self.frame_idx, self.flipped)
         if img.isNull():
-            painter.end()
-            return
+            # v99b: New state not loaded yet — keep showing last valid frame (no black flash)
+            img = self._last_frame if hasattr(self, '_last_frame') and not self._last_frame.isNull() else QImage()
+            if img.isNull():
+                painter.end()
+                return
+        else:
+            self._last_frame = img
 
         # -- apply transforms and draw --
         painter.save()

@@ -1,12 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Windows单文件EXE打包spec（优化版）
-# - assets用webp q80（~128MB vs PNG ~1GB）
-# - 排除不需要的PyQt5/Python模块减小体积
-# - UPX压缩启用
-# - strip=True去除调试符号
+# Windows onefile build spec — single EXE, double-click to run
+# UPX disabled (Qt DLLs break when compressed)
 
 excludes = [
-    # PyQt5不需要的子模块
     'PyQt5.QtBluetooth', 'PyQt5.QtDBus', 'PyQt5.QtDesigner',
     'PyQt5.QtHelp', 'PyQt5.QtLocation', 'PyQt5.QtMultimedia',
     'PyQt5.QtMultimediaWidgets', 'PyQt5.QtNetwork', 'PyQt5.QtNfc',
@@ -16,27 +12,34 @@ excludes = [
     'PyQt5.QtSvg', 'PyQt5.QtTest', 'PyQt5.QtWebChannel',
     'PyQt5.QtWebEngine', 'PyQt5.QtWebSockets', 'PyQt5.QtXml',
     'PyQt5.QtXmlPatterns', 'PyQt5.QtChart',
-    # Python不需要的标准库
-    # 注意：zipfile/zlib/json/urllib/logging/email等被PyInstaller运行时钩子间接依赖，不能排除
     'asyncio', 'concurrent', 'csv', 'dbm', 'distutils',
     'ftplib', 'gettext', 'imaplib', 'lib2to3',
     'mailbox', 'multiprocessing', 'pydoc', 'pydoc_data',
     'smtplib', 'socketserver', 'sqlite3',
     'tkinter', 'turtle', 'unittest',
-    'xmlrpc',
+    'xmlrpc', 'ensurepip', 'pip', 'setuptools',
+    'pkg_resources', 'wheel', 'platformdirs',
+    'numpy', 'pandas', 'scipy', 'matplotlib',
+    'PIL', 'numpy.core', 'numpy.fft', 'numpy.linalg',
+    'numpy.ma', 'numpy.matrixlib', 'numpy.polynomial',
+    'numpy.random', 'numpy.testing',
+    'sympy', 'IPython', 'jupyter', 'notebook',
+    'tornado', 'zmq', 'jedi', 'parso',
+    'cryptography', 'OpenSSL', 'cffi', 'pycparser',
 ]
 
 a = Analysis(['pet_engine.py'],
              pathex=[],
              binaries=[],
-             datas=[('assets', 'assets'), ('icon.png', '.')],
+             datas=[('assets', 'assets'), ('icon.png', '.'),
+                    ('C:/Users/humac/anaconda3/Library/plugins/platforms', 'PyQt5/Qt5/plugins/platforms')],
              hiddenimports=['PyQt5.QtWidgets', 'PyQt5.QtCore', 'PyQt5.QtGui'],
              hookspath=[],
              hooksconfig={},
              runtime_hooks=[],
              excludes=excludes,
              noarchive=False,
-             optimize=2)  # Python字节码优化级别2（去除docstrings+asserts）
+             optimize=2)
 
 pyz = PYZ(a.pure)
 
@@ -45,11 +48,11 @@ exe = EXE(pyz,
           a.binaries,
           a.datas,
           [],
-          name='金毛背心v1',
+          name='GoldenVestPet',
           debug=False,
           bootloader_ignore_signals=False,
-          strip=True,       # 去除调试符号减小体积
-          upx=True,         # UPX压缩
+          strip=True,
+          upx=False,
           upx_exclude=[],
           runtime_tmpdir=None,
           console=False,
