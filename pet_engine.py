@@ -538,9 +538,9 @@ class SpriteBank:
                 self.frames[state] = []
                 self.frames_m[state] = []
                 self.lift_map[state] = []
-        # Sync-load idle ALL frames (not just frame 0) — needed for animation on first screen
-        # Background preload is async; idle must be ready immediately or pet appears frozen
-        idle_imgs, idle_lift = self._build_state('idle')
+        # v107-perf: idle也LAZY——只同步加载帧0(<1MB), 后台加载全部
+        # 旧版同步加载121帧×3.5MB=423MB，现仅加载1帧≈0.86MB
+        idle_imgs, idle_lift = self._build_state('idle', max_frames=1)
         if idle_imgs:
             self.frames['idle'] = idle_imgs
             self.frames_m['idle'] = [None] * len(idle_imgs)
@@ -664,7 +664,7 @@ class SpriteBank:
             n += 1
         return n
 
-    def _build_state(self, state, frame_limit=None):
+    def _build_state(self, state, frame_limit=None, max_frames=None):
         """v99: Load pre-scaled assets directly (no runtime scaling).
         Assets are baked offline at DRAW_MAX size, engine loads with zero scaling.
         Falls back to legacy scaled path if assets are full-size."""
@@ -672,6 +672,8 @@ class SpriteBank:
         prefix, count, _f, _l, _i = ANIMS[state]
         tight = state in self.TIGHT
         draw = self._state_draw(state)
+        if max_frames:
+            count = min(count, max_frames)
         if frame_limit:
             count = min(count, frame_limit)
         raw_imgs = []
@@ -1437,7 +1439,9 @@ class PetWindow(QWidget):
         """v99b: Parallel background preload — spawn 3 threads at a time for all lazy states.
         With FastTransformation, each state loads in ~50-100ms, so 3 parallel threads
         finish all 20 states in ~1 second total."""
-        states = [s for s in ANIMS if s not in self.bank.alias and not self.bank.frames.get(s)]
+        # v107-perf: idle可能只有帧0(启动时同步加载1帧), 需要重新加载全部帧
+        states = [s for s in ANIMS if s not in self.bank.alias
+                  and (not self.bank.frames.get(s) or len(self.bank.frames.get(s, [])) < ANIMS[s][1])]
         if not states:
             return
         # Prioritize common interaction states first
