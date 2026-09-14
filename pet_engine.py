@@ -64,30 +64,30 @@ def asset_path():
 # ═══════════════════════════════════════════════════════════
 ANIMS = {
     # state: (prefix, frame_count, frame_ms, loop, intro_frames)
-    # frame_ms: source is 24fps=42ms. Low-motion states use 83ms(12fps) to cut CPU/gpu load;
-    # high-motion states keep 42ms for smoothness.
-    'idle':      ('idle',      30, 83,  True,  0),   # breathing only, 12fps enough
-    'walk':      ('walk',      119, 42,  True,  0),   # gait needs 24fps
+    # All states now 121 frames (SAM2+BiRefNet pipeline, darkblue video source)
+    # v107: 统一42ms=24fps，所有动作一轮=5.08秒，duration对齐整数倍轮次
+    'idle':      ('idle',      121, 42,  True,  0),
+    'walk':      ('walk',      121, 42,  True,  0),
     'run':       ('run',       121, 42,  True,  0),
-    'eat':       ('eat',       121, 83,  True,  0),   # slow chewing, 12fps fine
-    'bark':      ('bark',      121, 42,  True,  0),   # snappy action
-    'sleep':     ('sleep',     30, 83,  True,  0),   # barely moves
-    'sit':       ('sit',       30, 83,  True,  0),   # static sit
-    'lick':      ('lick',      40, 83,  True,  0),   # slow grooming
-    'happy':     ('happy',     121, 42,  False, 0),   # energetic jump
-    'roll':      ('roll',      121, 42,  False, 0),   # fast roll
-    'dance':     ('dance',     121, 42,  True,  0),   # bouncy
-    'stretch':   ('stretch',   60, 83,  False, 0),   # slow stretch
-    'beg':       ('beg',       60, 83,  True,  0),   # slow beg
-    'bath':      ('bath',      30, 83,  True, 0),    # slow shake
-    'surprised': ('surprised', 121, 42,  True,  0),   # snappy startle
-    'play_dead': ('play_dead', 60, 83,  False, 0),   # slow flop
-    'pet':       ('pet',       60, 83,  False, 0),   # dog sitting still
-    'kiss':      ('kiss',      121, 42,  False, 0),   # walking forward
-    'wave':      ('wave',      121, 42,  True,  0),   # paw wave
-    'type':      ('type',      30, 83,  True,  0),   # slow typing
+    'eat':       ('eat',       121, 42,  True,  0),
+    'bark':      ('bark',      121, 42,  True,  0),
+    'sleep':     ('sleep',     121, 42,  True,  0),
+    'sit':       ('sit',       121, 42,  True,  0),
+    'lick':      ('lick',      121, 42,  True,  0),
+    'happy':     ('happy',     121, 42,  False, 0),
+    'roll':      ('roll',      121, 42,  False, 0),
+    'dance':     ('dance',     121, 42,  True,  0),
+    'stretch':   ('stretch',   121, 42,  False, 0),
+    'beg':       ('beg',       121, 42,  True,  0),
+    'bath':      ('bath',      121, 42,  True, 0),
+    'surprised': ('surprised', 121, 42,  True,  0),
+    'play_dead': ('play_dead', 121, 42,  False, 0),
+    'pet':       ('pet',       121, 42,  False, 0),
+    'kiss':      ('kiss',      121, 42,  False, 0),
+    'wave':      ('wave',      121, 42,  True,  0),
+    'type':      ('type',      121, 42,  True,  0),
     'potty_run': ('run',       121, 42,  True,  0),
-    'potty':     ('sit',       30, 83,  True,  0),
+    'potty':     ('sit',       121, 42,  True,  0),
 }
 
 # Side-view states (walk/run face right by default, mirror when moving left; mirror direction controlled by self.flipped=facing<0)
@@ -231,8 +231,9 @@ class RoundedMenu(QWidget):
         self._result = None
         self.move(*self._clamp(pos.x(), pos.y(), pos))
         self.show()
+        # P3-fix2: DO NOT call activateWindow() — steals focus from Chrome/other apps
+        # raise_() is safe for Z-order without focus change
         self.raise_()
-        self.activateWindow()
         # App-level filter: unified mouse routing for main/submenu (fix for Qt.Popup dual-window capture conflict)
         QApplication.instance().installEventFilter(self)
         self._loop = QEventLoop()
@@ -434,6 +435,7 @@ class _StateLoadThread(QThread):
     def __init__(self, bank, state):
         super().__init__()
         self.bank, self.state = bank, state
+        self._draw_size = bank.draw_size  # v100: record for zoom-change rescale detection
         self.imgs = None
         self.lift = None
 
@@ -480,13 +482,15 @@ class SpriteBank:
         self._sprite_meta = None  # unused
 
     def _state_draw(self, state):
-        """v64: Per-state on-demand resolution. Old version unified draw=500(dpr2)  --  square canvas whitespace also takes long side,
-        texture long side can reach 2x screen requirement, memory proportional to draw squared explodes. Changed to proportional allocation by tight long side:
-        draw_s = draw x max(w,h)/1024 x ASSET_SCALE, clamped [96,1024]."""
+        """P5-fix: draw = target pixel size for the state's content.
+        For tight states, draw maps to DRAW_SIZE based on canvas height.
+        _build_state now scans actual content and scales by max_content_h uniformly."""
         draw = getattr(self, 'draw_size', DRAW_SIZE)
         if state in self.TIGHT:
             w, h = self.geo.get(state, (1024, 1024))
-            return max(96, min(1024, int(round(draw * max(w, h) / 1024.0
+            # Use canvas height as reference — _build_state will override with content-based scale
+            ref = h
+            return max(96, min(1024, int(round(draw * ref / 1024.0
                                                * self.ASSET_SCALE))))
         return min(draw, 1024)
 
@@ -534,20 +538,13 @@ class SpriteBank:
                 self.frames[state] = []
                 self.frames_m[state] = []
                 self.lift_map[state] = []
-        # Sync-load idle frame 0 only (first screen, <10ms)
-        idle_prefix = ANIMS['idle'][0]
-        fn0 = os.path.join(base, f'{idle_prefix}_000.webp')
-        if not os.path.exists(fn0):
-            fn0 = os.path.join(base, f'{idle_prefix}_000.png')
-        if os.path.exists(fn0):
-            img = QImage(fn0)
-            if not img.isNull():
-                img = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
-                draw = self._state_draw('idle')
-                img = img.scaled(draw, draw, Qt.KeepAspectRatio, Qt.FastTransformation)
-                self.frames['idle'] = [img]
-                self.frames_m['idle'] = [None]
-                self.lift_map['idle'] = [0.0]
+        # Sync-load idle ALL frames (not just frame 0) — needed for animation on first screen
+        # Background preload is async; idle must be ready immediately or pet appears frozen
+        idle_imgs, idle_lift = self._build_state('idle')
+        if idle_imgs:
+            self.frames['idle'] = idle_imgs
+            self.frames_m['idle'] = [None] * len(idle_imgs)
+            self.lift_map['idle'] = idle_lift
         # v19: Per-frame leg cutting  --  run frames contain gallop jumps (per-frame body_bot displacement up to 31px),
         # fixed cut line (only frame 0) misaligns leg blocks on jump frames. Cut per-frame by own body bottom,
         # preserving in-frame gallop undulation while keeping cut line aligned with body.
@@ -618,8 +615,16 @@ class SpriteBank:
             bank = self
             while getattr(bank, '_replaced_by', None) is not None:
                 bank = bank._replaced_by
-            bank.frames[state] = t.imgs
-            bank.frames_m[state] = [None] * len(t.imgs)
+            # v100-fix: If draw_size changed during lazy load (zoom), rescale frames to match new bank
+            imgs = t.imgs
+            if hasattr(t, '_draw_size') and abs(t._draw_size - bank.draw_size) > 1 and bank.draw_size > 0:
+                sc = bank.draw_size / float(t._draw_size)
+                imgs = [img.scaled(max(2, int(round(img.width() * sc))),
+                                   max(2, int(round(img.height() * sc))),
+                                   Qt.KeepAspectRatio, Qt.FastTransformation)
+                        for img in t.imgs]
+            bank.frames[state] = imgs
+            bank.frames_m[state] = [None] * len(imgs)
             bank.lift_map[state] = t.lift
             # v67: After full frame table replaces first-frame fast path, current frame index may overflow (first-frame bank length 1),
             # notify window to reset animation phase to avoid IndexError/stuck frame.
@@ -669,27 +674,59 @@ class SpriteBank:
         draw = self._state_draw(state)
         if frame_limit:
             count = min(count, frame_limit)
-        imgs = []
-
-        # v99: Load individual frame files (pre-scaled offline, no sprite sheet)
-        for i in range(count):
-            fn = os.path.join(base, f'{prefix}_{i:03d}.webp')
-            if not os.path.exists(fn):
-                fn = os.path.join(base, f'{prefix}_{i:03d}.png')
-            img = QImage(fn)
-            if img.isNull():
-                continue
-            img = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
-            if tight:
+        raw_imgs = []
+        # P5-fix: For tight states, collect raw frames first to compute unified content-based scale
+        # Old approach: scale each frame by canvas height → content height varies → dog size pulsates.
+        # New: scan content bbox of all frames, find max content height, scale uniformly by content.
+        if tight:
+            for i in range(count):
+                fn = os.path.join(base, f'{prefix}_{i:03d}.webp')
+                if not os.path.exists(fn):
+                    fn = os.path.join(base, f'{prefix}_{i:03d}.png')
+                img = QImage(fn)
+                if not img.isNull():
+                    raw_imgs.append(img.convertToFormat(QImage.Format_ARGB32_Premultiplied))
+            # Scan content bbox of all raw frames to find max content height and width
+            max_content_h = 0
+            max_content_w = 0
+            content_tops = []
+            content_bots = []
+            for img in raw_imgs:
+                ct, cb = self._content_bbox_v(img)
+                cl, cr = self._content_bbox_h(img)
+                content_tops.append(ct)
+                content_bots.append(cb)
+                ch = cb - ct + 1 if cb >= ct else img.height()
+                cw = cr - cl + 1 if cr >= cl else img.width()
+                if ch > max_content_h:
+                    max_content_h = ch
+                if cw > max_content_w:
+                    max_content_w = cw
+            # v101-fix: Use max dimension (not just height) for scale calculation.
+            # Side-facing states (walk/run) have content_w >> content_h; scaling by height only
+            # makes frames wider than draw → paintEvent clips left/right edges of the dog.
+            max_dim = max(max_content_h, max_content_w)
+            sc = draw / float(max_dim) if max_dim > 0 else 1.0
+            imgs = []
+            for img in raw_imgs:
                 w, h = img.width(), img.height()
-                sc = draw / float(max(w, h))
                 img = img.scaled(max(2, int(round(w * sc))),
                                  max(2, int(round(h * sc))),
                                  Qt.KeepAspectRatio, Qt.FastTransformation)
-            else:
+                imgs.append(img)
+        else:
+            imgs = []
+            for i in range(count):
+                fn = os.path.join(base, f'{prefix}_{i:03d}.webp')
+                if not os.path.exists(fn):
+                    fn = os.path.join(base, f'{prefix}_{i:03d}.png')
+                img = QImage(fn)
+                if img.isNull():
+                    continue
+                img = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
                 img = img.scaled(draw, draw,
                                   Qt.KeepAspectRatio, Qt.FastTransformation)
-            imgs.append(img)
+                imgs.append(img)
         if not tight and imgs:
             # v49: Mirror lazy generation  --  get() mirrors centered draw x draw canvas on first request
             # (centered = naturally symmetric, no shift error).
@@ -768,8 +805,90 @@ class SpriteBank:
         cache[key] = bot
         return bot
 
-    @staticmethod
-    def _content_centroid_x(img):
+    def _content_bbox_v(self, img):
+        """P5-fix: Get vertical content bbox (top, bottom rows with alpha>24).
+        4x downsampled for speed. Returns (top, bottom) 0-indexed, or (0, h-1) if no content."""
+        w, h = img.width(), img.height()
+        if w < 1 or h < 1:
+            return 0, max(0, h - 1)
+        buf = img.constBits()
+        buf.setsize(img.byteCount())
+        # Python 3.12 fix: sip.voidptr[index] returns bytes, not int; convert to memoryview
+        buf = memoryview(buf).cast('B')
+        bpl = img.bytesPerLine()
+        top = h
+        bot = 0
+        found = False
+        for y in range(0, h, 4):
+            rb = y * bpl + 3
+            for x in range(0, w * 4, 32):
+                if buf[rb + x] > 24:
+                    if y < top:
+                        top = y
+                    if y > bot:
+                        bot = y
+                    found = True
+                    break
+        # Refine top/bot by checking adjacent rows
+        if found:
+            # Refine top (check rows above first hit)
+            for y in range(max(0, top - 4), top):
+                rb = y * bpl + 3
+                for x in range(0, w * 4, 32):
+                    if buf[rb + x] > 24:
+                        top = y
+                        break
+            # Refine bot (check rows below last hit)
+            for y in range(bot + 1, min(h, bot + 5)):
+                rb = y * bpl + 3
+                for x in range(0, w * 4, 32):
+                    if buf[rb + x] > 24:
+                        bot = y
+                        break
+            return top, bot
+        return 0, h - 1
+
+    def _content_bbox_h(self, img):
+        """v101: Get horizontal content bbox (left, right cols with alpha>24).
+        4x downsampled for speed. Returns (left, right) 0-indexed, or (0, w-1) if no content."""
+        w, h = img.width(), img.height()
+        if w < 1 or h < 1:
+            return 0, max(0, w - 1)
+        buf = img.constBits()
+        buf.setsize(img.byteCount())
+        buf = memoryview(buf).cast('B')
+        bpl = img.bytesPerLine()
+        left = w
+        right = 0
+        found = False
+        for x in range(0, w, 4):
+            xb = x * 4 + 3
+            for y in range(0, h, 4):
+                rb = y * bpl
+                if buf[rb + xb] > 24:
+                    if x < left:
+                        left = x
+                    if x > right:
+                        right = x
+                    found = True
+                    break
+        if found:
+            for x in range(max(0, left - 4), left):
+                xb = x * 4 + 3
+                for y in range(0, h, 4):
+                    if buf[y * bpl + xb] > 24:
+                        left = x
+                        break
+            for x in range(right + 1, min(w, right + 5)):
+                xb = x * 4 + 3
+                for y in range(0, h, 4):
+                    if buf[y * bpl + xb] > 24:
+                        right = x
+                        break
+            return left, right
+        return 0, w - 1
+
+    def _content_centroid_x(self, img):
         """Content (alpha>24) horizontal centroid x; no content returns None
         v48: 4x downsample (old per-pixel pure Python scan was 70% of load(), 20s at 2.5x zoom).
         Uniform downsample centroid error <2px, shift uses int(round) so output unchanged."""
@@ -1085,6 +1204,8 @@ class PetWindow(QWidget):
         # P3: disable keyboard focus (attribute may not exist in all PyQt5 versions)
         if hasattr(Qt, 'WA_InputMethodDisabled'):
             self.setAttribute(Qt.WA_InputMethodDisabled, True)
+        # P3-fix2: Never accept keyboard focus — prevents stealing input from Chrome/other apps
+        self.setFocusPolicy(Qt.NoFocus)
 
         # v25 (P9): Read persisted zoom ratio (default 1.0)
         self.zoom = load_zoom()
@@ -1194,7 +1315,8 @@ class PetWindow(QWidget):
             self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
             self.show()
         # v26: Refresh stay-on-top  --  WindowStaysOnTopHint may be overridden by other top windows
-        self.raise_()
+        # P3-fix2: DO NOT call raise_() or activateWindow() here — these steal focus from Chrome/other apps
+        # Instead use lower-level re-raise that doesn't change Z-order focus
 
     def changeEvent(self, event):
         """Intercept external minimize (e.g. Win+D/taskbar "Show Desktop" briefly hides all windows), stay persistent"""
@@ -1246,10 +1368,22 @@ class PetWindow(QWidget):
             old = self.bank
             new = t.result
             # v94-fix: Migrate loaded lazy state frame tables (old zoom rebuild lost action frames = actions disappear)
+            # v100-fix: Rescale migrated frames to new draw_size (zoom change changes draw_size,
+            # old frames rendered at old draw_size would be mis-scaled by k=DRAW_SIZE/new_draw)
+            _new_draw = new.draw_size
+            _old_draw = old.draw_size
+            _need_rescale = abs(_new_draw - _old_draw) > 1
             for st, fr in old.frames.items():
                 if fr and st in new.LAZY:
-                    new.frames[st] = fr
-                    new.frames_m[st] = old.frames_m.get(st) or [None] * len(fr)
+                    if _need_rescale:
+                        sc = _new_draw / float(_old_draw) if _old_draw > 0 else 1.0
+                        new.frames[st] = [img.scaled(max(2, int(round(img.width() * sc))),
+                                                      max(2, int(round(img.height() * sc))),
+                                                      Qt.KeepAspectRatio, Qt.FastTransformation)
+                                          for img in fr]
+                    else:
+                        new.frames[st] = fr
+                    new.frames_m[st] = [None] * len(new.frames[st])
                     new.lift_map[st] = old.lift_map.get(st) or []
             new._loaded_order = list(getattr(old, '_loaded_order', []))
             old._replaced_by = new   # v94-fix: In-flight lazy load write-back routes to latest bank
@@ -1271,10 +1405,21 @@ class PetWindow(QWidget):
             return
         new = t.result
         # Retain lazy state loaded frame tables (actions triggered by user after startup not lost)
+        # v100-fix: Rescale if draw_size changed (shouldn't happen in fullbank swap, but guard)
+        _new_draw = new.draw_size
+        _old_draw = self.bank.draw_size
+        _need_rescale = abs(_new_draw - _old_draw) > 1
         for st, fr in self.bank.frames.items():
             if fr and st in new.LAZY:
-                new.frames[st] = fr
-                new.frames_m[st] = self.bank.frames_m.get(st) or [None] * len(fr)
+                if _need_rescale:
+                    sc = _new_draw / float(_old_draw) if _old_draw > 0 else 1.0
+                    new.frames[st] = [img.scaled(max(2, int(round(img.width() * sc))),
+                                                  max(2, int(round(img.height() * sc))),
+                                                  Qt.KeepAspectRatio, Qt.FastTransformation)
+                                      for img in fr]
+                else:
+                    new.frames[st] = fr
+                new.frames_m[st] = [None] * len(new.frames[st])
                 new.lift_map[st] = self.bank.lift_map.get(st) or []
         new._loaded_order = list(getattr(self.bank, '_loaded_order', []))
         new.on_state_reloaded = self._on_state_reloaded
@@ -1292,7 +1437,7 @@ class PetWindow(QWidget):
         """v99b: Parallel background preload — spawn 3 threads at a time for all lazy states.
         With FastTransformation, each state loads in ~50-100ms, so 3 parallel threads
         finish all 20 states in ~1 second total."""
-        states = [s for s in ANIMS if s not in self.alias and not self.frames.get(s)]
+        states = [s for s in ANIMS if s not in self.bank.alias and not self.bank.frames.get(s)]
         if not states:
             return
         # Prioritize common interaction states first
@@ -1365,6 +1510,10 @@ class PetWindow(QWidget):
             self.frame_idx = 0
         self.roll_angle = 0.0
         self.pop_t = 0.0 if same_move else 0.16
+        # v106-fix: 切到任何非移动状态时立即清零水平速度，彻底消灭窗口滑行
+        if s not in ('walk', 'run', 'potty_run'):
+            self.vel_x = 0.0
+            self.move_acc = 0.0
         # Start antic: crouch before running to build momentum
         # v96-fix: Reduced from 0.18 to 0.05 - old 0.18s caused "stands still for a few frames before walking"
         if s in ('walk', 'run', 'potty_run') and prev not in ('walk', 'run', 'potty_run'):
@@ -1458,8 +1607,15 @@ class PetWindow(QWidget):
     #  --  --  --  --  -- ─ Main loop  --  --  --  --  -- ─
     def game_loop(self):
         now = time.perf_counter()
-        dt = min(now - self.last_t, 0.05)
+        raw_dt = now - self.last_t
+        dt = min(raw_dt, 0.05)
+        # v107-fix: 启动卡顿时原始dt>>0.05，AI用wall clock的state_time()已经>duration
+        # 导致连续快速切状态→窗口位移堆叠→视觉滑行。根治：原始dt>0.1时只重置时钟，跳过AI/物理
         self.last_t = now
+        skip_ai_physics = raw_dt > 0.1
+        if skip_ai_physics:
+            # 重置状态开始时间，防止wall clock累积导致误触发duration到期
+            self.state_started = now
 
         # Frame advance (gait frames synced with actual speed, prevents foot sliding: slower speed = slower gait frames)
         st_for_frame = self.state
@@ -1479,15 +1635,9 @@ class PetWindow(QWidget):
             else:
                 body_len = count - intro
                 body_idx = raw_idx - intro
-                # Actions with intro use ping-pong loop to avoid frame jumps
-                if self.state == 'bath':
-                    phase = body_idx % (body_len * 2)
-                    if phase < body_len:
-                        self.frame_idx = intro + phase
-                    else:
-                        self.frame_idx = intro + (body_len * 2 - 1 - phase)
-                else:
-                    self.frame_idx = intro + (body_idx % body_len)
+                # P2-fix: bath uses simple loop instead of ping-pong — ping-pong reversal
+                # caused visible flicker on foam/shake frames at the reversal point
+                self.frame_idx = intro + (body_idx % body_len)
         else:
             self.frame_idx = raw_idx % count if loop else min(raw_idx, count - 1)
 
@@ -1509,13 +1659,12 @@ class PetWindow(QWidget):
         self._update_turn(dt)
         self._update_micro(dt)
 
-        # Velocity decay in non-moving state (slide buffer after hard stop)
+        # v107: vel_x always zeroed on state switch to non-moving state,
+        # only physics throw can set non-zero vel_x during surprised state
         if (self.state not in ('walk', 'run', 'potty_run')
                 and not self.physics.active and not self.dragging):
-            if abs(self.vel_x) > 2:
-                self._integrate_vel(dt, 0.0, 0.0, 2000.0)
-            else:
-                self.vel_x = 0.0
+            self.vel_x = 0.0
+            self.move_acc = 0.0
         # Occasional leg kick twitch during sleep
         if self.state == 'sleep':
             self.sleep_twitch_next -= dt
@@ -1531,11 +1680,13 @@ class PetWindow(QWidget):
         else:
             raw_air = 0.0
         self.smooth_air += (raw_air - self.smooth_air) * min(1.0, dt / 0.09)
-        self.update_ai(dt)
-        impact = self.physics.update(dt, self, self.floor_y, 0,
-                                      QApplication.primaryScreen().geometry().right() - self.width())
-        if impact > 200:
-            self.particles.emit(ParticleSystem.DUST, CANVAS / 2, CANVAS - GROUND_PAD, 4)
+        # v107-fix: 卡顿时跳过AI/物理，防止wall clock累积导致连续快速切状态→滑行
+        if not skip_ai_physics:
+            self.update_ai(dt)
+            impact = self.physics.update(dt, self, self.floor_y, 0,
+                                          QApplication.primaryScreen().geometry().right() - self.width())
+            if impact > 200:
+                self.particles.emit(ParticleSystem.DUST, CANVAS / 2, CANVAS - GROUND_PAD, 4)
 
         self.particles.update(dt)
         self.update_stats(dt)
@@ -1566,14 +1717,12 @@ class PetWindow(QWidget):
         st_time = self.state_time()
         sg = QApplication.primaryScreen().geometry()
 
-        # Timed statesend
+        # Timed states end — always return to idle (user-triggered actions should not
+        # invoke AI random behavior after completion, which causes inconsistent returns)
         if st in self.state_duration and st_time > self.state_duration[st]:
             del self.state_duration[st]
-            # v10: Added 'eat'  --  feeding (duration=6.56) expiry old code didn't return to idle,
-            #      dog kept looping eat until ai_timer happened to expire (stuck up to 11 seconds)
-            if st in ('happy', 'roll', 'dance', 'bark', 'lick', 'stretch', 'beg', 'bath', 'eat'):
-                self.set_state('idle')
-                return
+            self.set_state('idle')
+            return
 
         if self.dragging:
             return
@@ -1608,7 +1757,10 @@ class PetWindow(QWidget):
             if st != 'surprised':
                 self.set_state('surprised')
             return
-        if st == 'surprised':
+        # P8-fix: surprised state should play for its duration, not immediately return to idle
+        # Old code: if st == 'surprised': self.set_state('idle') — this made surprised button useless
+        # Now: surprised plays until state_duration expires (set in contextMenuEvent)
+        if st == 'surprised' and st not in self.state_duration and st_time > 2.0:
             self.set_state('idle')
             return
 
@@ -1693,30 +1845,30 @@ class PetWindow(QWidget):
                     self.facing = self.walk_dir
                     self.flipped = self.facing < 0
             elif r < 0.55:
-                self.set_state('happy', duration=5.1)
+                self.set_state('happy', duration=5.08)
             elif r < 0.66:
-                self.set_state('bark', duration=5.1)
+                self.set_state('bark', duration=5.08)
             elif r < 0.76:
-                self.set_state('lick', duration=4.0)
+                self.set_state('lick', duration=5.08)
             elif r < 0.84:
-                self.set_state('roll', duration=10.2)
+                self.set_state('roll', duration=10.16)
             else:
                 self.set_state('idle')
         else:  # desktop  --  drag-drop fixed: after drag, fixed at current position, does various actions in place, no auto-walking
             if r < 0.30:
                 self.set_state('idle')
             elif r < 0.45:
-                self.set_state('happy', duration=5.1)
+                self.set_state('happy', duration=5.08)
             elif r < 0.58:
-                self.set_state('lick', duration=4.0)
+                self.set_state('lick', duration=5.08)
             elif r < 0.70:
-                self.set_state('roll', duration=10.2)
+                self.set_state('roll', duration=10.16)
             elif r < 0.80:
-                self.set_state('bark', duration=5.1)
+                self.set_state('bark', duration=5.08)
             elif r < 0.90:
-                self.set_state('dance', duration=10.3)
+                self.set_state('dance', duration=10.16)
             else:
-                self.set_state('sit', duration=6.0)
+                self.set_state('sit', duration=5.08)
 
     def _do_walk(self, speed, dt):
         sg = QApplication.primaryScreen().geometry()
@@ -1911,15 +2063,12 @@ class PetWindow(QWidget):
 
         # v64: bottom-anchored proportional drawing -- tight assets drawn proportionally by frame w/h (canvas height = union height,
         # no in-frame pulsation; calm six-state baseline unified, no jump on state switch).
-        # k conversion makes screen logical size pixel-equivalent to v63 square canvas path:
-        #   tight: texture long side = draw x max(w,h)/1024 x 1.05 -> k=DRAW_SIZE/(draw x 1.05),
-        #          screen height = texture height x k = h/1024 x DRAW_SIZE (1.05 texture oversampling doesn't affect geometry)
-        #   square canvas (walk approved): k=DRAW_SIZE/draw, identical to v63's DRAW_SIZE square rect
+        # P4/P5-fix: k maps texture pixels to DRAW_SIZE logical coordinates.
+        # Since _build_state scales by height (sc = draw / h), texture height == draw,
+        # so k = DRAW_SIZE / draw maps correctly.
         _owner = self.bank.alias.get(self.state, self.state)
-        if _owner in self.bank.TIGHT:
-            k = DRAW_SIZE / (self.bank.draw_size * self.bank.ASSET_SCALE)
-        else:
-            k = DRAW_SIZE / max(96, min(self.bank.draw_size, 1024))
+        _draw = self.bank._state_draw(_owner) if _owner in self.bank.TIGHT else max(96, min(self.bank.draw_size, 1024))
+        k = DRAW_SIZE / _draw
         _iw, _ih = img.width(), img.height()
         draw_rect = QRectF(-_iw * k / 2, -_ih * k + GROUND_PAD, _iw * k, _ih * k)
         #  --  Leg rig rendering (Paper-Doll Rig): real walking swing  -- 
@@ -2026,8 +2175,9 @@ class PetWindow(QWidget):
     def mouseDoubleClickEvent(self, event):
         trick = random.choice(['happy', 'roll', 'dance', 'bark'])
         # Each trick duration aligned to integer multiple of loop period (happy is one-shot), avoids hard cut mid-action
-        self.set_state(trick, duration={'happy': 5.1, 'roll': 10.2,
-                                        'dance': 10.3, 'bark': 5.1}[trick])
+        # P3-fix: durations match actual frame counts to prevent premature cut
+        self.set_state(trick, duration={'happy': 5.08, 'roll': 10.16,
+                                        'dance': 10.16, 'bark': 5.08}[trick])
         self.happiness = min(100, self.happiness + 6)
 
     def contextMenuEvent(self, event):
@@ -2089,39 +2239,38 @@ class PetWindow(QWidget):
                 self.set_state('run')
                 self.say('Catch me!')
         elif action == 'feed':
-            self.set_state('eat', duration=6.56)
+            self.set_state('eat', duration=5.08)
             self.fullness = min(100, self.fullness + 20)
             self.happiness = min(100, self.happiness + 5)
         elif action == 'pet':
             self.happiness = min(100, self.happiness + 10)
-            # v57: Pet head = independent pet interaction (hand stroke + dog enjoying), distinct from lick grooming
-            self.set_state('pet', duration=4.6)
+            self.set_state('pet', duration=5.08)
         elif action == 'happy':
-            self.set_state('happy', duration=5.1)
+            self.set_state('happy', duration=5.08)
         elif action == 'roll':
-            self.set_state('roll', duration=10.2)
+            self.set_state('roll', duration=10.16)
         elif action == 'dance':
-            self.set_state('dance', duration=10.3)
+            self.set_state('dance', duration=10.16)
         elif action == 'bark':
-            self.set_state('bark', duration=5.1)
+            self.set_state('bark', duration=5.08)
         elif action == 'lick':
-            self.set_state('lick', duration=4.0)
+            self.set_state('lick', duration=5.08)
         elif action == 'beg':
-            self.set_state('beg', duration=5.1)
+            self.set_state('beg', duration=5.08)
         elif action == 'bath':
-            self.set_state('bath', duration=10.3)
+            self.set_state('bath', duration=10.16)
         elif action == 'wave':
-            self.set_state('wave', duration=2.4)
+            self.set_state('wave', duration=5.08)
         elif action == 'stretch':
-            self.set_state('stretch', duration=5.0)
+            self.set_state('stretch', duration=5.08)
         elif action == 'surprised':
-            self.set_state('surprised', duration=5.1)
+            self.set_state('surprised', duration=5.08)
         elif action == 'kiss':
-            self.set_state('kiss', duration=5.1)
+            self.set_state('kiss', duration=5.08)
         elif action == 'type':
-            self.set_state('type', duration=3.6)
+            self.set_state('type', duration=5.08)
         elif action == 'play_dead':
-            self.set_state('play_dead', duration=5.1)
+            self.set_state('play_dead', duration=5.08)
         elif action == 'walk':
             # Perform walk: set direction and duration, make the dog walk
             self.walk_dir = random.choice([-1, 1])
