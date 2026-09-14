@@ -1,0 +1,9 @@
+;!@Install@!UTF-8!
+Title=金背心宠物
+BeginPrompt=将金背心宠物安装到当前目录下的 GoldenVestPet 文件夹？
+ExtractDialogText=正在解压...
+GUIFlags=1+4+8
+OverwriteMode=0
+InstallPath=.\\GoldenVestPet
+RunProgram="GoldenVestPet.exe"
+;!@InstallEnd@!
