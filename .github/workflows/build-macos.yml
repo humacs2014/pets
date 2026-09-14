@@ -1,6 +1,6 @@
 name: build-macos-dmg
+# v108: ad-hoc codesign (lipo后必须重签) + DoubleClickToOpen.command处理quarantine
 # Universal2 single package: dual-arch matrix build.app -> merge job -> one DMG
-# codesign removed: CI lacks developer cert, DoubleClickToOpen.command handles quarantine
 
 on:
   push:
@@ -67,6 +67,11 @@ jobs:
           git commit -m "CI: build failure log (${{ matrix.arch }})" || true
           git push -f origin ci-logs-GoldenVestPet-${{ matrix.arch }} || true
 
+      - name: Ad-hoc codesign each arch
+        run: |
+          codesign --force --deep --sign - "dist/GoldenVestPet.app"
+          codesign -dv "dist/GoldenVestPet.app" 2>&1 | head -5
+
       - name: Upload .app artifact
         run: |
           export COPYFILE_DISABLE=1
@@ -110,30 +115,40 @@ jobs:
           ls apps/
           bash merge_universal.sh apps/arm64.app apps/x86_64.app "GoldenVestPet.app"
 
+      - name: Ad-hoc codesign after lipo merge
+        run: |
+          codesign --force --deep --sign - "GoldenVestPet.app"
+          codesign -dv "GoldenVestPet.app" 2>&1 | head -5
+          codesign --verify --deep --strict "GoldenVestPet.app" && echo "Signature OK"
+
       - name: Create DoubleClickToOpen script
         run: |
-          cat > "DoubleClickToOpen.command" <<'EOF'
+          cat > "双击打开.command" <<'SCRIPT'
           #!/bin/bash
           cd "$(dirname "$0")"
           SRC="GoldenVestPet.app"
           DEST="/Applications/$SRC"
           if [ ! -d "$DEST" ] && [ -d "$SRC" ]; then
+            echo "正在将金背心宠物安装到 Applications..."
             cp -R "$SRC" /Applications/ 2>/dev/null || osascript -e "do shell script \"cp -R '$PWD/$SRC' /Applications/\" with administrator privileges" 2>/dev/null
+            echo "安装完成！"
           fi
           APP="$DEST"
           [ -d "$APP" ] || APP="$(pwd)/$SRC"
+          echo "正在清除安全限制..."
           xattr -cr "$APP" 2>/dev/null
+          echo "正在启动金背心宠物..."
           open "$APP"
-          EOF
-          chmod +x "DoubleClickToOpen.command"
+          SCRIPT
+          chmod +x "双击打开.command"
 
       - name: Package DMG
         run: |
           rm -rf dmg_stage
           mkdir dmg_stage
           cp -R "GoldenVestPet.app" dmg_stage/
-          cp "DoubleClickToOpen.command" dmg_stage/
-          chmod +x "dmg_stage/DoubleClickToOpen.command"
+          cp "双击打开.command" dmg_stage/
+          chmod +x "dmg_stage/双击打开.command"
           ln -s /Applications dmg_stage/Applications
           hdiutil create -volname "GoldenVestPet" -srcfolder dmg_stage -ov -format UDZO "GoldenVestPet-v1-macOS-Universal.dmg"
 
@@ -161,12 +176,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "GoldenVestPet-v1-macos-universal"
-          name: "GoldenVestPet v1 (macOS Universal - Apple Silicon & Intel)"
+          name: "金背心宠物 v1 (macOS 通用版 - Apple Silicon 与 Intel 均适用)"
           body: |
-            macOS GoldenVestPet (Universal2).
-            Compatible with both Apple Silicon (M1/M2/M3/M4) and Intel Mac.
-            Install: Double-click DMG -> drag to Applications.
-            First open: Run "DoubleClickToOpen.command" in the DMG (handles security prompts automatically).
-            Alternative: Right-click app in Finder -> "Open" -> confirm "Open".
-            If "damaged" error: Terminal -> xattr -cr /Applications/GoldenVestPet.app
+            macOS版金背心宠物（Universal2通用版）。
+            一个安装包同时兼容 Apple Silicon（M1/M2/M3/M4）和 Intel 芯片的Mac。
+
+            安装：双击DMG → 把GoldenVestPet图标拖到Applications文件夹。
+
+            首次打开（关键！必须先做这步）：
+            打开DMG里的"双击打开.command"（会弹出终端窗口自动处理安全限制并启动应用）。
+            备选：在访达里右键点击应用→选择"打开"→弹窗里再点"打开"。
+
+            仍然提示"已损坏"？打开终端粘贴执行：
+            xattr -cr /Applications/GoldenVestPet.app
+            然后双击打开即可。
           files: "GoldenVestPet-v1-macOS-Universal.dmg"
