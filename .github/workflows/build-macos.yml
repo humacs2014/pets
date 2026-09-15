@@ -1,6 +1,7 @@
 name: build-macos-dmg
-# v108: ad-hoc codesign (lipo后必须重签) + DoubleClickToOpen.command处理quarantine
-# Universal2 single package: dual-arch matrix build.app -> merge job -> one DMG
+# v109: Standard DMG with drag-to-Applications layout
+# User opens DMG → drags .app to Applications folder → launches from there
+# Universal2: dual-arch matrix build -> lipo merge -> single DMG
 
 on:
   push:
@@ -121,73 +122,57 @@ jobs:
           codesign -dv "GoldenVestPet.app" 2>&1 | head -5
           codesign --verify --deep --strict "GoldenVestPet.app" && echo "Signature OK"
 
-      - name: Create DoubleClickToOpen script
-        run: |
-          cat > "双击打开.command" <<'SCRIPT'
-          #!/bin/bash
-          cd "$(dirname "$0")"
-          SRC="GoldenVestPet.app"
-          DEST="/Applications/$SRC"
-          if [ ! -d "$DEST" ] && [ -d "$SRC" ]; then
-            echo "正在将金背心宠物安装到 Applications..."
-            cp -R "$SRC" /Applications/ 2>/dev/null || osascript -e "do shell script \"cp -R '$PWD/$SRC' /Applications/\" with administrator privileges" 2>/dev/null
-            echo "安装完成！"
-          fi
-          APP="$DEST"
-          [ -d "$APP" ] || APP="$(pwd)/$SRC"
-          echo "正在清除安全限制..."
-          xattr -cr "$APP" 2>/dev/null
-          echo "正在启动金背心宠物..."
-          open "$APP"
-          SCRIPT
-          chmod +x "双击打开.command"
-
-      - name: Package DMG
+      - name: Create DMG with drag-to-Applications layout
         run: |
           rm -rf dmg_stage
           mkdir dmg_stage
+          # Place the .app bundle
           cp -R "GoldenVestPet.app" dmg_stage/
-          cp "双击打开.command" dmg_stage/
-          chmod +x "dmg_stage/双击打开.command"
+          # Symlink to /Applications — this is what makes Finder show the "drag to install" UI
           ln -s /Applications dmg_stage/Applications
-          hdiutil create -volname "GoldenVestPet" -srcfolder dmg_stage -ov -format UDZO "GoldenVestPet-v1-macOS-Universal.dmg"
+          # Create DMG with custom volume name
+          hdiutil create -volname "GoldenVestPet" -srcfolder dmg_stage -ov -format UDZO "GoldenVestPet.dmg"
 
       - name: Verify DMG
         run: |
-          hdiutil verify "GoldenVestPet-v1-macOS-Universal.dmg"
+          hdiutil verify "GoldenVestPet.dmg"
           ls -lh *.dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: pet-macos-dmg-universal
-          path: "GoldenVestPet-v1-macOS-Universal.dmg"
+          path: "GoldenVestPet.dmg"
           retention-days: 30
 
       - name: Cleanup previous releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete GoldenVestPet-v1-macos-arm64 --yes --cleanup-tag 2>/dev/null || true
-          gh release delete GoldenVestPet-v1-macos-x86_64 --yes --cleanup-tag 2>/dev/null || true
           gh release delete GoldenVestPet-v1-macos-universal --yes --cleanup-tag 2>/dev/null || true
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "GoldenVestPet-v1-macos-universal"
-          name: "金背心宠物 v1 (macOS 通用版 - Apple Silicon 与 Intel 均适用)"
+          name: "GoldenVestPet v1 (macOS Universal — Apple Silicon & Intel)"
           body: |
-            macOS版金背心宠物（Universal2通用版）。
-            一个安装包同时兼容 Apple Silicon（M1/M2/M3/M4）和 Intel 芯片的Mac。
+            GoldenVestPet for macOS (Universal2 — works on both Apple Silicon M1/M2/M3/M4 and Intel Macs).
 
-            安装：双击DMG → 把GoldenVestPet图标拖到Applications文件夹。
+            **How to install:**
+            1. Double-click the DMG to open it
+            2. Drag GoldenVestPet.app to the Applications folder
+            3. Close the DMG window
+            4. Launch from /Applications/GoldenVestPet.app
 
-            首次打开（关键！必须先做这步）：
-            打开DMG里的"双击打开.command"（会弹出终端窗口自动处理安全限制并启动应用）。
-            备选：在访达里右键点击应用→选择"打开"→弹窗里再点"打开"。
+            **First launch (important!):**
+            Right-click the app → choose "Open" → click "Open" in the dialog.
+            This is required because the app is not signed with an Apple Developer certificate.
 
-            仍然提示"已损坏"？打开终端粘贴执行：
+            **If you see "app is damaged" error:**
+            Open Terminal and run:
+            ```
             xattr -cr /Applications/GoldenVestPet.app
-            然后双击打开即可。
-          files: "GoldenVestPet-v1-macOS-Universal.dmg"
+            ```
+            Then double-click to open.
+          files: "GoldenVestPet.dmg"

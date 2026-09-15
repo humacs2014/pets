@@ -100,7 +100,7 @@ GROUND_PAD = 14       # Foot bottom padding
 # ═══════════════════════════════════════════════════════════
 #  v25 (P9): Global zoom  --  menu "Size" scale up/down/reset, ratio persisted
 # ═══════════════════════════════════════════════════════════
-ZOOM_DEFAULT = 1.0
+ZOOM_DEFAULT = 0.75
 ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 0.5, 2.5, 0.25
 
 
@@ -219,10 +219,12 @@ class RoundedMenu(QWidget):
     def _clamp(self, x, y, pos):
         scr = QApplication.screenAt(pos) or QApplication.primaryScreen()
         sg = scr.geometry()
+        # v109: If menu would extend below screen bottom, pop up above the anchor point instead
+        if y + self._h > sg.bottom():
+            y = y - self._h
+        # Clamp horizontal
         if x + self._w > sg.right():
             x = sg.right() - self._w
-        if y + self._h > sg.bottom():
-            y = sg.bottom() - self._h
         return max(sg.left(), x), max(sg.top(), y)
 
     def exec_menu(self, pos):
@@ -643,8 +645,9 @@ class SpriteBank:
         if state in self.LAZY and state not in self._loaded_order:
             self._loaded_order.append(state)
 
-    def unload_idle_lazy(self, active_state, keep=3):
-        """v66: Memory reclaim  --  loaded lazy states exceeding keep count and not current state,
+    def unload_idle_lazy(self, active_state, keep=2):
+        """v110: Memory reclaim -- keep reduced from 3 to 2 (stable memory ~242MB instead of ~301MB).
+        Loaded lazy states exceeding keep count and not current state,
         unload least-recently-triggered (clear frames/frames_m/lift back to lazy placeholder).
         Aliased states (potty->sit), current state, and resident states not unloaded. Return unload count."""
         order = getattr(self, '_loaded_order', [])
@@ -665,9 +668,9 @@ class SpriteBank:
         return n
 
     def _build_state(self, state, frame_limit=None, max_frames=None):
-        """v99: Load pre-scaled assets directly (no runtime scaling).
-        Assets are baked offline at DRAW_MAX size, engine loads with zero scaling.
-        Falls back to legacy scaled path if assets are full-size."""
+        """v110: Streaming load using pre-computed sprite_meta.json.
+        Peak memory = 1 raw frame + 1 scaled frame (instead of 121 raw frames).
+        Falls back to legacy scan-all path if meta unavailable."""
         base = asset_path()
         prefix, count, _f, _l, _i = ANIMS[state]
         tight = state in self.TIGHT
@@ -676,11 +679,42 @@ class SpriteBank:
             count = min(count, max_frames)
         if frame_limit:
             count = min(count, frame_limit)
-        raw_imgs = []
-        # P5-fix: For tight states, collect raw frames first to compute unified content-based scale
-        # Old approach: scale each frame by canvas height → content height varies → dog size pulsates.
-        # New: scan content bbox of all frames, find max content height, scale uniformly by content.
-        if tight:
+        
+        # v110: Try streaming path with pre-computed meta
+        meta = self._sprite_meta
+        state_meta = meta.get(state) if meta else None
+        
+        if state_meta and tight:
+            # Streaming path: use pre-computed content bbox, no need to hold all raw frames
+            max_dim = state_meta.get('max_dim', 0)
+            if max_dim <= 0:
+                max_dim = state_meta.get('max_content_h', 1)
+            sc = draw / float(max_dim) if max_dim > 0 else 1.0
+            # Also compute scale from frame dimensions (fallback for non-content-based)
+            frame_h = state_meta.get('frame_h', 832)
+            sc_geo = draw * self.ASSET_SCALE / 1024.0 if frame_h else 1.0
+            
+            imgs = []
+            precomp_bottoms = state_meta.get('frames', [])
+            for i in range(count):
+                fn = os.path.join(base, f'{prefix}_{i:03d}.webp')
+                if not os.path.exists(fn):
+                    fn = os.path.join(base, f'{prefix}_{i:03d}.png')
+                img = QImage(fn)
+                if img.isNull():
+                    continue
+                img = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
+                w, h = img.width(), img.height()
+                # Scale using pre-computed max_dim (no need to scan all frames first)
+                img = img.scaled(max(2, int(round(w * sc))),
+                                 max(2, int(round(h * sc))),
+                                 Qt.KeepAspectRatio, Qt.FastTransformation)
+                imgs.append(img)
+            # raw_imgs no longer held — memory freed immediately
+            
+        elif tight:
+            # Legacy fallback: no meta, scan all frames (old peak=436MB for 1088x832)
+            raw_imgs = []
             for i in range(count):
                 fn = os.path.join(base, f'{prefix}_{i:03d}.webp')
                 if not os.path.exists(fn):
@@ -688,25 +722,17 @@ class SpriteBank:
                 img = QImage(fn)
                 if not img.isNull():
                     raw_imgs.append(img.convertToFormat(QImage.Format_ARGB32_Premultiplied))
-            # Scan content bbox of all raw frames to find max content height and width
             max_content_h = 0
             max_content_w = 0
-            content_tops = []
-            content_bots = []
             for img in raw_imgs:
                 ct, cb = self._content_bbox_v(img)
                 cl, cr = self._content_bbox_h(img)
-                content_tops.append(ct)
-                content_bots.append(cb)
                 ch = cb - ct + 1 if cb >= ct else img.height()
                 cw = cr - cl + 1 if cr >= cl else img.width()
                 if ch > max_content_h:
                     max_content_h = ch
                 if cw > max_content_w:
                     max_content_w = cw
-            # v101-fix: Use max dimension (not just height) for scale calculation.
-            # Side-facing states (walk/run) have content_w >> content_h; scaling by height only
-            # makes frames wider than draw → paintEvent clips left/right edges of the dog.
             max_dim = max(max_content_h, max_content_w)
             sc = draw / float(max_dim) if max_dim > 0 else 1.0
             imgs = []
@@ -716,7 +742,9 @@ class SpriteBank:
                                  max(2, int(round(h * sc))),
                                  Qt.KeepAspectRatio, Qt.FastTransformation)
                 imgs.append(img)
+            precomp_bottoms = None
         else:
+            # Non-tight path (not used currently — all states are TIGHT)
             imgs = []
             for i in range(count):
                 fn = os.path.join(base, f'{prefix}_{i:03d}.webp')
@@ -729,41 +757,49 @@ class SpriteBank:
                 img = img.scaled(draw, draw,
                                   Qt.KeepAspectRatio, Qt.FastTransformation)
                 imgs.append(img)
+            precomp_bottoms = None
         if not tight and imgs:
-            # v49: Mirror lazy generation  --  get() mirrors centered draw x draw canvas on first request
-            # (centered = naturally symmetric, no shift error).
             imgs, _sh = self._center_frames(imgs)
-        #  --  Per-frame lift height: content bbox bottom relative to max bottom of full sequence, normalized 0..1 -- 
-        # Pure Python sample scan: bottom-up per row, every 8 columns (feet usually hit in first few rows)
-        # v66: cacheKey caches bottom (repeat action trigger/zoom rebuild no rescan, eliminates trigger CPU spike)
-        bottoms = []
-        for im in imgs:
-            key = im.cacheKey()
-            if key in _BODY_BOTTOM_CACHE2:
-                bottoms.append(_BODY_BOTTOM_CACHE2[key])
-                continue
-            buf = im.constBits()
-            buf.setsize(im.byteCount())
-            data = bytes(buf)   # bytes index returns int, can compare directly
-            w4 = im.width() * 4
-            bpl = im.bytesPerLine()
-            cols = range(0, w4, 32)   # Sample alpha channel every 8 columns
-            bottom = im.height() - 1
-            for row in range(im.height() - 1, -1, -1):
-                rowbase = row * bpl + 3
-                if any(data[rowbase + c] > 16 for c in cols):
-                    bottom = row
-                    break
-            if len(_BODY_BOTTOM_CACHE2) > 2000:
-                _BODY_BOTTOM_CACHE2.clear()
-            _BODY_BOTTOM_CACHE2[key] = bottom
-            bottoms.append(bottom)
+        
+        # v110: Lift calculation — use pre-computed body_bottom from meta if available
+        if precomp_bottoms and len(precomp_bottoms) >= len(imgs):
+            # Pre-computed path: body_bottom already known from sprite_meta.json
+            # Need to scale the bottom values by the same scale factor used for images
+            body_bottoms_raw = [f.get('body_bottom', 0) for f in precomp_bottoms[:len(imgs)]]
+            # Scale body_bottom to match scaled image coordinates
+            frame_h = (state_meta or {}).get('frame_h', 832)
+            max_dim_val = (state_meta or {}).get('max_dim', frame_h)
+            sc_lift = draw / float(max_dim_val) if max_dim_val > 0 else 1.0
+            bottoms = [max(0, min(int(round(b * sc_lift)), img_h - 1)) 
+                       for b, img_h in zip(body_bottoms_raw, [im.height() for im in imgs])]
+        else:
+            # Legacy runtime scan path
+            bottoms = []
+            for im in imgs:
+                key = im.cacheKey()
+                if key in _BODY_BOTTOM_CACHE2:
+                    bottoms.append(_BODY_BOTTOM_CACHE2[key])
+                    continue
+                buf = im.constBits()
+                buf.setsize(im.byteCount())
+                data = bytes(buf)
+                w4 = im.width() * 4
+                bpl = im.bytesPerLine()
+                cols = range(0, w4, 32)
+                bottom = im.height() - 1
+                for row in range(im.height() - 1, -1, -1):
+                    rowbase = row * bpl + 3
+                    if any(data[rowbase + c] > 16 for c in cols):
+                        bottom = row
+                        break
+                if len(_BODY_BOTTOM_CACHE2) > 2000:
+                    _BODY_BOTTOM_CACHE2.clear()
+                _BODY_BOTTOM_CACHE2[key] = bottom
+                bottoms.append(bottom)
+        
         if bottoms:
             ground = max(bottoms)
             var = ground - min(bottoms)
-            # Shadow flicker cause: small bottom jitter (<30px) from leg pose/breathing is not real jumping,
-            # old code normalized with max(6.0, var) amplifying 12px leg lift to 100% airborne -> shadow shrinks 45% per step.
-            # Variance <30px treated as grounded, lift=0; only real jumping states (run/jump/stretch etc) keep shadow linkage.
             if var < 30:
                 lift = [0.0 for _ in bottoms]
             else:
@@ -1316,9 +1352,27 @@ class PetWindow(QWidget):
         if not self.isVisible() or self.isMinimized():
             self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
             self.show()
-        # v26: Refresh stay-on-top  --  WindowStaysOnTopHint may be overridden by other top windows
+        # v26+v109: Refresh stay-on-top  --  WindowStaysOnTopHint may be overridden by other top windows
         # P3-fix2: DO NOT call raise_() or activateWindow() here — these steal focus from Chrome/other apps
-        # Instead use lower-level re-raise that doesn't change Z-order focus
+        # v109: Use native SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE) on Windows — reaffirms topmost
+        # without changing focus. On macOS, use objc NSWindow.setLevel.
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                hwnd = int(self.winId())
+                # HWND_TOPMOST = -1, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE = 0x0003|0x0010|0x0002
+                ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0015)
+            except Exception:
+                pass
+        elif sys.platform == 'darwin':
+            try:
+                import objc
+                from AppKit import NSStatusWindowLevel
+                ns_view = objc.objc_object(c_void_p=int(self.winId()))
+                ns_win = ns_view.window()
+                ns_win.setLevel_(NSStatusWindowLevel)
+            except Exception:
+                pass
 
     def changeEvent(self, event):
         """Intercept external minimize (e.g. Win+D/taskbar "Show Desktop" briefly hides all windows), stay persistent"""
@@ -1945,12 +1999,7 @@ class PetWindow(QWidget):
     # ---------- Drawing (core: hybrid rendering) ----------
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        # v25 (P9): unified zoom -- all drawing logic keeps CANVAS=320 logical coordinate system,
-        # one scale makes sprite (pre-rendered at zoom)/particles/bubble sync-scale
-        painter.scale(self.zoom, self.zoom)
-
+        # v110: Compute transforms first to decide render hints
         now = time.perf_counter()
         t = now - self.state_started
         dx = CANVAS / 2
@@ -1964,33 +2013,24 @@ class PetWindow(QWidget):
         speed_ratio = 1.0  # Speed ratio to cruise speed (adjusts stride amplitude)
 
         if st == 'idle' or st == 'sit':
-            # v7: 3D idle animation has built-in breathing, programmatic bob removed (avoids "floating GIF feel")
             pass
         elif st == 'sleep':
-            # v7.1: Lying frames have built-in breathing, no more programmatic bob (avoids floating feel); retains leg kick twitch accent
             if self.sleep_twitch_t > 0:
                 tw = self.sleep_twitch_t
                 rot += math.sin(tw * 22) * 1.5 * tw
         elif st in ('walk', 'run', 'potty_run'):
-            # v7: 3D gait animation has built-in bounce and real leg swing, programmatic only keeps velocity forward lean
             rot = max(-3.5, min(3.5, self.vel_x * 0.011))
         elif st == 'happy':
-            # v7: Jump_ToIdle animation has built-in full jump arc (liftoff->landing), no more programmatic jump overlay
             pass
         elif st == 'roll':
-            # v7.1: True 3D roll baked into frames (Body rotates 360 degrees around front-back axis), no more programmatic whole-image rotation
             bob = -3
         elif st == 'dance':
-            # v7.1: dance real animation (hind legs upright + front paw wave) baked into frames, no more programmatic rotation/bob overlay
             pass
         elif st == 'eat':
-            # v7: Eating animation has built-in full head-down eating motion, no more programmatic wobble overlay
             pass
         elif st == 'bark':
-            # v7: Attack animation has built-in lunge-bite motion, no more recoil overlay
             pass
         elif st in ('bath', 'surprised', 'stretch', 'beg', 'lick', 'sit', 'sleep'):
-            # v7.1: true 3D animations (shake/startle/stretch/beg/lick/sit/sleep) baked into frames
             pass
 
         #  --  Start antic (crouch to build momentum) -- 
@@ -2010,12 +2050,9 @@ class PetWindow(QWidget):
         # -- state entry spring (slight overshoot) --
         if self.pop_t > 0:
             p = self.pop_t / 0.16
-            o = math.sin(p * math.pi) * 0.03  # v19: 0.07->0.03 reduce entry spring overshoot, prevents jump frame head pushed near window top (P1)
+            o = math.sin(p * math.pi) * 0.03
             sx *= 1.0 + o * 0.6
             sy *= 1.0 + o
-
-        #  --  v19: Turn X-axis compression completely removed  --  changed to competitor (Deskpet Dog) style pure mirror flip.
-        # User twice criticized X-axis squash as "card flip"; turn_scale() deprecated (always returns 1.0)  -- 
 
         #  --  Idle micro-actions  -- 
         if self.micro:
@@ -2045,9 +2082,17 @@ class PetWindow(QWidget):
             (t0, x0, _), (t1, x1, _) = self.mouse_hist[0], self.mouse_hist[-1]
             if t1 > t0:
                 vx = (x1 - x0) / (t1 - t0)
-                rot += max(-8, min(8, vx * 0.012))  # Within +/-8 degrees doesn't exceed window margin, avoids rotation clipping
+                rot += max(-8, min(8, vx * 0.012))
 
-        #  --  Image fetch (v25 P2: dynamic shadow removed  --  user explicitly requested no bottom shadows) -- 
+        # v110: Only enable expensive render hints when transforms are active
+        has_transform = (abs(rot) > 0.1 or abs(sx - 1.0) > 0.001 or abs(sy - 1.0) > 0.001
+                         or abs(self.zoom - round(self.zoom)) > 0.01)
+        painter.setRenderHint(QPainter.Antialiasing, has_transform)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, has_transform)
+        # v25 (P9): unified zoom -- all drawing logic keeps CANVAS=320 logical coordinate system
+        painter.scale(self.zoom, self.zoom)
+
+        #  --  Image fetch
         img = self.bank.get(self.state, self.frame_idx, self.flipped)
         if img.isNull():
             # v99b: New state not loaded yet — keep showing last valid frame (no black flash)

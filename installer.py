@@ -1,13 +1,13 @@
 """
-GoldenVestPet 安装器 v108
-- 双击运行 → 自动解压到exe所在目录/GoldenVestPet/ → 自动启动
-- 纯Python zipfile解压，无需7z
-- PyInstaller打包时将宠物目录作为datas内嵌
+GoldenVestPet Installer v109
+- Double-click → auto-install to exe_dir/GoldenVestPet/ → auto-launch
+- Embeds the entire onedir dist as datas via PyInstaller
+- User gets a single Setup.exe, no zip/7z needed
 """
-import sys, os, subprocess, shutil, zipfile, time
+import sys, os, subprocess, shutil, time
 
 def resource_path(name):
-    """PyInstaller打包后资源路径"""
+    """PyInstaller bundled resource path"""
     if getattr(sys, 'frozen', False):
         return os.path.join(sys._MEIPASS, name)
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dist', name)
@@ -18,20 +18,19 @@ def main():
     src = resource_path("GoldenVestPet")
 
     print("=" * 46)
-    print("  金背心宠物 (GoldenVestPet) 安装器")
+    print("  GoldenVestPet Installer")
     print("=" * 46)
-    print(f"\n  安装目录: {target}")
+    print(f"\n  Install to: {target}")
 
     if not os.path.exists(src):
-        print(f"\n  错误: 安装数据未找到 ({src})")
-        input("  按回车退出...")
+        print(f"\n  Error: Install data not found ({src})")
+        input("  Press Enter to exit...")
         return 1
 
     if os.path.exists(target):
-        # 保留crash.log等用户文件，覆盖其余
-        print("  检测到已有安装，覆盖更新中...")
+        print("  Existing installation found, updating...")
 
-    print("\n  正在安装文件，请稍候...\n")
+    print("\n  Installing files, please wait...\n")
     count = 0
     for root, dirs, files in os.walk(src):
         rel = os.path.relpath(root, src)
@@ -43,21 +42,20 @@ def main():
             shutil.copy2(s, d)
             count += 1
             if count % 200 == 0:
-                print(f"  已安装 {count} 个文件...")
+                print(f"  Installed {count} files...")
 
-    print(f"\n  ✓ 已安装 {count} 个文件到: {target}")
+    print(f"\n  ✓ Installed {count} files to: {target}")
 
-    # 启动宠物
-    pet = os.path.join(target, "GoldenVestPet.exe")
+    # Launch pet
+    pet = os.path.join(target, "金毛背心v1.exe")
     if os.path.exists(pet):
-        print("  正在启动金背心宠物...")
+        print("  Launching GoldenVestPet...")
         subprocess.Popen([pet], cwd=target, close_fds=True)
-        print("  ✓ 已启动！")
+        print("  ✓ Launched!")
     else:
-        print(f"  错误: 未找到 {pet}")
+        print(f"  Error: Pet exe not found at {pet}")
         return 1
 
-    # 自动退出（无input等待）
     time.sleep(1)
     return 0
 

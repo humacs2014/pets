@@ -1,14 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
-# 安装器打包spec — 将dist/GoldenVestPet整个目录内嵌为datas
-# 输出: dist/GoldenVestPet-Setup.exe (~68MB)
-# 用户双击 → 解压到当前目录/GoldenVestPet/ → 自动启动
+# Installer spec — embeds onedir dist as datas
+# Output: dist/GoldenVestPet-Setup.exe
+# User double-clicks → installs to current_dir/GoldenVestPet/ → auto-launches
 
 a = Analysis(
     ['installer.py'],
     pathex=[],
     binaries=[],
     datas=[
-        ('dist/GoldenVestPet', 'GoldenVestPet'),
+        ('dist/金毛背心v1', 'GoldenVestPet'),
     ],
     hiddenimports=[],
     hookspath=[],
