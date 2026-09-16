@@ -60,18 +60,17 @@ jobs:
           echo "Architecture: $(uname -m)"
           $HOME/build_env/bin/python -m PyInstaller --version
           $HOME/build_env/bin/python -m PyInstaller golden_vest_mac.spec --noconfirm --clean 2>&1 | tee pyinstaller.log
-          file "dist/GoldenVestPet.app/Contents/MacOS/GoldenVestPet"
+          file "dist/GoldenVestPet.app/Contents/MacOS/GoldenVestPet" || true
           # v113: Check .app size — should be <80MB; if >150MB, heavy libs leaked in
-          du -sh "dist/GoldenVestPet.app"
+          du -sh "dist/GoldenVestPet.app" || true
           echo "=== Top 20 largest files in .app ==="
-          find dist/GoldenVestPet.app -type f -exec ls -lS {} + 2>/dev/null | sort -rn -k5 | head -20
+          find dist/GoldenVestPet.app -type f -print0 | xargs -0 ls -lS 2>/dev/null | sort -rn -k5 | head -20 || true
           echo "=== Large binaries (>5MB) ==="
-          find dist/GoldenVestPet.app -name '*.so' -o -name '*.dylib' | while read f; do
-            size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)
+          find dist/GoldenVestPet.app \( -name '*.so' -o -name '*.dylib' \) -print0 | xargs -0 stat -f '%z %N' 2>/dev/null | while read size path; do
             if [ "$size" -gt 5000000 ]; then
-              echo "WARN: Large binary ($((size/1024/1024))MB): $f"
+              echo "WARN: Large binary ($((size/1024/1024))MB): $path"
             fi
-          done
+          done || true
 
       - name: Push build log on failure
         if: failure()
