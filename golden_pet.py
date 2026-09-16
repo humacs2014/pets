@@ -214,12 +214,18 @@ class RoundedMenu(QWidget):
 
     def _clamp(self, x, y, pos):
         scr = QApplication.screenAt(pos) or QApplication.primaryScreen()
-        sg = scr.geometry()
-        if x + self._w > sg.right():
-            x = sg.right() - self._w
-        if y + self._h > sg.bottom():
-            y = sg.bottom() - self._h
-        return max(sg.left(), x), max(sg.top(), y)
+        ag = scr.availableGeometry()   # availableGeometry 排除任务栏/DOCK
+        # 水平：右溢出→左靠齐
+        if x + self._w > ag.right():
+            x = ag.right() - self._w
+        x = max(ag.left(), x)
+        # 垂直：菜单底部超出可用区→向上翻转
+        if y + self._h > ag.bottom():
+            y = pos.y() - self._h
+        # 翻转后仍溢出顶部→夹紧到顶
+        if y < ag.top():
+            y = ag.top()
+        return x, y
 
     def exec_menu(self, pos):
         """模态显示于全局坐标 pos，返回选中项 key（None=取消）"""
@@ -284,7 +290,7 @@ class RoundedMenu(QWidget):
                 x = gp.x() + 2
                 y = gp.y() - _MENU_PAD
                 scr = QApplication.screenAt(gp) or QApplication.primaryScreen()
-                if x + sub._w > scr.geometry().right():
+                if x + sub._w > scr.availableGeometry().right():
                     x = self.mapToGlobal(r.topLeft()).x() - sub._w - 2
                 sub.move(*sub._clamp(x, y, gp))
                 sub.show()
