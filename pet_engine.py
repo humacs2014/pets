@@ -2318,6 +2318,15 @@ class PetWindow(QWidget):
     # ---------- Drawing (core: hybrid rendering) ----------
     def paintEvent(self, event):
         painter = QPainter(self)
+        # v117: Clear entire widget to transparent EVERY frame.
+        # macOS layer-backed windows do NOT auto-clear the backing store between
+        # paintEvents (unlike Windows). Without this, previous frame's pixels in
+        # regions no longer covered by the current sprite remain as ghost shadows.
+        # Windows auto-clears on WA_TranslucentBackground, but the clear is cheap
+        # (fills the clip rect with 0x0) so we do it unconditionally.
+        painter.setCompositionMode(QPainter.CompositionMode_Source)
+        painter.fillRect(event.rect(), Qt.transparent)
+        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         # v113: Clip to dirty rect — on macOS layer-backed windows, the backing store
         # only needs to fill the dirty region. Without this, every paintEvent redraws
         # the entire 640×640 pixel buffer even when only a small particle area changed.
