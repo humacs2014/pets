@@ -130,11 +130,12 @@ jobs:
           codesign -dv "GoldenVestPet.app" 2>&1 | head -5
           codesign --verify --deep --strict "GoldenVestPet.app" && echo "Signature OK"
 
-      - name: Create DMG with drag-to-Applications layout
+      - name: Create DMG with styled drag-to-Applications layout
         run: |
-          # v113: Use create_dmg.sh for proper Finder two-pane layout
-          # (simple hdiutil creates a plain folder view without the classic drag-to-install UI)
-          bash create_dmg.sh GoldenVestPet.app GoldenVestPet.dmg
+          # v113: Use dmgbuild (pure Python, no Finder/AppleScript) for styled DMG
+          # Includes background image, icon positions, proper window size
+          pip install dmgbuild Pillow
+          python make_dmg.py GoldenVestPet.app GoldenVestPet.dmg
 
       - name: Verify DMG
         run: |
