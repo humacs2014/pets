@@ -84,7 +84,12 @@ jobs:
 
       - name: Ad-hoc codesign each arch
         run: |
-          codesign --force --deep --sign - "dist/GoldenVestPet.app"
+          # v113: Sign with Hardened Runtime (--options runtime) even for ad-hoc.
+          # Without hardened runtime, macOS treats the app as completely unsigned
+          # and runs full Gatekeeper quarantine scan on EVERY launch (slow).
+          # With hardened runtime + ad-hoc, macOS caches the signature check
+          # and only quarantines on first launch.
+          codesign --force --deep --sign - --options runtime --entitlements entitlements.mac.plist "dist/GoldenVestPet.app"
           codesign -dv "dist/GoldenVestPet.app" 2>&1 | head -5
 
       - name: Upload .app artifact
@@ -132,9 +137,10 @@ jobs:
 
       - name: Ad-hoc codesign after lipo merge
         run: |
-          codesign --force --deep --sign - "GoldenVestPet.app"
+          codesign --force --deep --sign - --options runtime --entitlements entitlements.mac.plist "GoldenVestPet.app"
           codesign -dv "GoldenVestPet.app" 2>&1 | head -5
           codesign --verify --deep --strict "GoldenVestPet.app" && echo "Signature OK"
+          codesign -d --entitlements - "GoldenVestPet.app" 2>&1 | head -20
 
       - name: Create DMG with styled drag-to-Applications layout
         run: |
@@ -173,16 +179,16 @@ jobs:
             1. Double-click the DMG to open it
             2. Drag GoldenVestPet.app to the Applications folder
             3. Close the DMG window
-            4. Launch from /Applications/GoldenVestPet.app
+            4. Open Terminal, run this ONE-TIME command to remove macOS download quarantine:
+               ```
+               xattr -cr /Applications/GoldenVestPet.app
+               ```
+            5. Double-click /Applications/GoldenVestPet.app to launch!
 
-            **First launch (important!):**
-            Right-click the app → choose "Open" → click "Open" in the dialog.
-            This is required because the app is not signed with an Apple Developer certificate.
+            **Why step 4?** macOS quarantines apps downloaded from the internet.
+            Running `xattr -cr` once removes the quarantine flag, so the app
+            launches instantly on every future start — no more "verifying" delay.
 
-            **If you see "app is damaged" error:**
-            Open Terminal and run:
-            ```
-            xattr -cr /Applications/GoldenVestPet.app
-            ```
-            Then double-click to open.
+            **Alternative (no Terminal):** Right-click the app → choose "Open" → click "Open" in the dialog.
+            This also removes quarantine but only works on first launch.
           files: "GoldenVestPet.dmg"
