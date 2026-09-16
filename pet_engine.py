@@ -35,7 +35,7 @@ if getattr(sys, 'frozen', False):
         os.add_dll_directory(_base)
 
 from PyQt5.QtWidgets import QApplication, QWidget
-from PyQt5.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QRect, QThread, QEventLoop, QEvent
+from PyQt5.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QRect, QThread, QEventLoop, QEvent, pyqtSignal
 from PyQt5.QtGui import (
     QPainter, QPen, QBrush, QColor, QPainterPath, QFont, QFontMetrics,
     QImage, QImageReader, QCursor, QRadialGradient, QLinearGradient
@@ -433,19 +433,81 @@ class _LoadThread(QThread):
 
 
 class _StateLoadThread(QThread):
-    """v64: lazy-loadsinglestate --  -- backgroundBuildshouldstateframe table, finishedaftermain threadwrite backbank. """
-    def __init__(self, bank, state):
+    """v112: Incremental lazy-load — builds frames in batches of CHUNK, emits chunk_ready
+    so animation grows smoothly (5→25→45→…→121) instead of 5-frame loop stutter.
+    Thread builds full state but emits every CHUNK frames for progressive display."""
+    chunk_ready = pyqtSignal(str, list, list)   # (state, new_frames, new_lift)
+
+    CHUNK = 20  # frames per incremental batch
+
+    def __init__(self, bank, state, start_from=5):
         super().__init__()
         self.bank, self.state = bank, state
         self._draw_size = bank.draw_size  # v100: record for zoom-change rescale detection
         self.imgs = None
         self.lift = None
+        self._start_from = start_from  # skip first N frames (already loaded by sync fast path)
 
     def run(self):
         try:
-            self.imgs, self.lift = self.bank._build_state(self.state)
+            state = self.state
+            bank = self.bank
+            base = asset_path()
+            prefix, count, _f, _l, _i = ANIMS[state]
+            draw = bank._state_draw(state)
+            meta = bank._sprite_meta
+            state_meta = meta.get(state) if meta else None
+            tight = state in bank.TIGHT
+            if not (state_meta and tight):
+                # Fallback: use full _build_state (no incremental)
+                self.imgs, self.lift = bank._build_state(state)
+                return
+
+            max_dim = state_meta.get('max_dim', 0)
+            if max_dim <= 0:
+                max_dim = state_meta.get('max_content_h', 1)
+            sc = draw / float(max_dim) if max_dim > 0 else 1.0
+            frame_h = state_meta.get('frame_h', 832)
+            sc_geo = draw * bank.ASSET_SCALE / 1024.0 if frame_h else 1.0
+            precomp_bottoms = state_meta.get('frames', [])
+
+            all_imgs = []
+            all_lift = []
+            first_chunk = True
+            for i in range(self._start_from, count):
+                fn = os.path.join(base, f'{prefix}_{i:03d}.webp')
+                if not os.path.exists(fn):
+                    fn = os.path.join(base, f'{prefix}_{i:03d}.png')
+                img = QImage(fn)
+                if img.isNull():
+                    continue
+                img = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
+                w, h = img.width(), img.height()
+                img = img.scaled(max(2, int(round(w * sc))),
+                                 max(2, int(round(h * sc))),
+                                 Qt.KeepAspectRatio, Qt.FastTransformation)
+                all_imgs.append(img)
+
+                # Lift for this frame
+                if precomp_bottoms and i < len(precomp_bottoms):
+                    bb_raw = precomp_bottoms[i].get('body_bottom', 0)
+                    sc_lift = draw / float(max_dim) if max_dim > 0 else 1.0
+                    bb = max(0, min(int(round(bb_raw * sc_lift)), img.height() - 1))
+                else:
+                    bb = bank._body_bottom(img)
+                all_lift.append(bb)
+
+                # Emit chunk every CHUNK frames
+                if len(all_imgs) >= self.CHUNK or i == count - 1:
+                    self.chunk_ready.emit(state, list(all_imgs), list(all_lift))
+                    all_imgs = []
+                    all_lift = []
+                    first_chunk = False
+
+            # Store full result for _on_lazy_done compatibility
+            self.imgs = None  # already emitted incrementally
+            self.lift = None
         except Exception:
-            # v69-fix: Same  --  lazy load thread exception no longer kills process, logs and degrades (action blank but alive)
             _crash_log(f'StateLoadThread[{self.state}]')
             self.imgs, self.lift = None, None
 
@@ -599,8 +661,8 @@ class SpriteBank:
                 self._loaded_order.append(owner)
 
     def ensure_state(self, state):
-        """v112: Sync-load 5 frames (~100ms) for instant display, then async-load remaining 116 frames.
-        Main thread shows animation immediately via 5-frame fast path, background thread fills rest."""
+        """v112: Sync-load 5 frames (~100ms) for instant display, then async-load remaining frames
+        incrementally (20 frames per chunk). Animation grows 5→25→45→…→121, no stutter."""
         owner = self.alias.get(state, state)
         if owner not in self.LAZY or self.frames.get(owner):
             return
@@ -616,37 +678,63 @@ class SpriteBank:
                 self._loaded_order = getattr(self, '_loaded_order', [])
                 if owner not in self._loaded_order:
                     self._loaded_order.append(owner)
-        # Background full load: replaces 5-frame table with full 121-frame table when done
-        t = _StateLoadThread(self, owner)
+        # Background incremental load: emits chunk_ready every 20 frames
+        t = _StateLoadThread(self, owner, start_from=len(self.frames.get(owner, [])))
         self._lazy_threads[owner] = t
+        t.chunk_ready.connect(self._on_chunk_ready)
         t.finished.connect(lambda s=owner, th=t: self._on_lazy_done(s, th))
         t.start()
 
+    def _on_chunk_ready(self, state, new_imgs, new_lift):
+        """v112: Append incremental chunk to frame table — animation grows without reset.
+        Lift values are body_bottoms (ints); final lift (0..1 float) set in _on_lazy_done after all frames arrive.
+        During loading, lift_map holds body_bottoms — _state_draw uses lift_map only for run gallop,
+        temporary int values cause no visual glitch (idle/walk/etc have var<30 → lift=0.0)."""
+        bank = self
+        while getattr(bank, '_replaced_by', None) is not None:
+            bank = bank._replaced_by
+        existing = bank.frames.get(state, [])
+        existing_lift = bank.lift_map.get(state, [])
+        bank.frames[state] = existing + new_imgs
+        bank.frames_m[state] = [None] * len(bank.frames[state])
+        bank.lift_map[state] = existing_lift + new_lift
+
     def _on_lazy_done(self, state, t):
         self._lazy_threads.pop(state, None)
+        # v112: Incremental mode — frames already appended via _on_chunk_ready.
+        # Recalculate lift_map from collected body_bottoms → proper 0..1 floats.
+        bank = self
+        while getattr(bank, '_replaced_by', None) is not None:
+            bank = bank._replaced_by
         if t.imgs is not None:
-            # v94-fix race: During lazy-load thread build, bank may be replaced by fullbank/zoom swap,
-            # old code wrote back to old bank = new bank never gets full frame table (action stuck on first frame = action disappears).
-            # Route via _replaced_by chain to latest bank before writing.
-            bank = self
-            while getattr(bank, '_replaced_by', None) is not None:
-                bank = bank._replaced_by
-            # v100-fix: If draw_size changed during lazy load (zoom), rescale frames to match new bank
-            imgs = t.imgs
+            # Fallback path: full build_state (no sprite_meta or non-tight)
             if hasattr(t, '_draw_size') and abs(t._draw_size - bank.draw_size) > 1 and bank.draw_size > 0:
                 sc = bank.draw_size / float(t._draw_size)
-                imgs = [img.scaled(max(2, int(round(img.width() * sc))),
-                                   max(2, int(round(img.height() * sc))),
-                                   Qt.KeepAspectRatio, Qt.FastTransformation)
-                        for img in t.imgs]
-            bank.frames[state] = imgs
-            bank.frames_m[state] = [None] * len(imgs)
-            bank.lift_map[state] = t.lift
-            # v67: After full frame table replaces first-frame fast path, current frame index may overflow (first-frame bank length 1),
-            # notify window to reset animation phase to avoid IndexError/stuck frame.
-            cb = getattr(bank, 'on_state_reloaded', None)
-            if cb:
-                cb(state)
+                t.imgs = [img.scaled(max(2, int(round(img.width() * sc))),
+                                     max(2, int(round(img.height() * sc))),
+                                     Qt.KeepAspectRatio, Qt.FastTransformation)
+                          for img in t.imgs]
+            existing = bank.frames.get(state, [])
+            skip = len(existing)
+            if skip > 0 and len(t.imgs) > skip:
+                bank.frames[state] = existing + t.imgs[skip:]
+                bank.frames_m[state] = [None] * len(bank.frames[state])
+                bank.lift_map[state] = (bank.lift_map.get(state) or []) + t.lift[skip:]
+            else:
+                bank.frames[state] = t.imgs
+                bank.frames_m[state] = [None] * len(t.imgs)
+                bank.lift_map[state] = t.lift
+        else:
+            # Incremental mode: lift_map has body_bottoms (ints), convert to 0..1 floats
+            bottoms = bank.lift_map.get(state, [])
+            if bottoms:
+                ground = max(bottoms) if bottoms else 0
+                var = ground - min(bottoms) if bottoms else 0
+                if var < 30:
+                    bank.lift_map[state] = [0.0 for _ in bottoms]
+                else:
+                    span = float(var)
+                    bank.lift_map[state] = [max(0.0, min(1.0, (ground - b) / span)) for b in bottoms]
         t.deleteLater()
 
     def _load_state(self, state, frame_limit=None):
