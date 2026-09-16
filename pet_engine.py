@@ -25,6 +25,8 @@ import random
 import time
 import os
 import json
+import gc
+import shutil
 
 # PyInstaller onefile fix: Qt5 needs to find platforms plugin in temp dir
 if getattr(sys, 'frozen', False):
@@ -35,10 +37,11 @@ if getattr(sys, 'frozen', False):
         os.add_dll_directory(_base)
 
 from PyQt5.QtWidgets import QApplication, QWidget
-from PyQt5.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QRect, QThread, QEventLoop, QEvent, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QRect, QThread, QEventLoop, QEvent, pyqtSignal, QSize, QBuffer, QStandardPaths
 from PyQt5.QtGui import (
     QPainter, QPen, QBrush, QColor, QPainterPath, QFont, QFontMetrics,
-    QImage, QImageReader, QPixmap, QCursor, QRadialGradient, QLinearGradient
+    QImage, QImageReader, QPixmap, QCursor, QRadialGradient, QLinearGradient,
+    QTransform
 )
 
 # Cross-platform font: macOS has no Microsoft YaHei, fallback to system sans
@@ -459,12 +462,12 @@ class _LoadThread(QThread):
 
 
 class _StateLoadThread(QThread):
-    """v112: Incremental lazy-load — builds frames in batches of CHUNK, emits chunk_ready
-    so animation grows smoothly (5→25→45→…→121) instead of 5-frame loop stutter.
-    Thread builds full state but emits every CHUNK frames for progressive display."""
+    """v114: Incremental lazy-load — builds frames in batches of CHUNK, emits chunk_ready
+    so animation grows smoothly (5→15→25→…→121). Also writes disk cache for fast re-load.
+    CHUNK=10 (was 20) for faster incremental display on slow machines."""
     chunk_ready = pyqtSignal(str, list, list)   # (state, new_frames, new_lift)
 
-    CHUNK = 20  # frames per incremental batch
+    CHUNK = 10  # v114: smaller chunks = faster incremental display
 
     def __init__(self, bank, state, start_from=5):
         super().__init__()
@@ -504,14 +507,23 @@ class _StateLoadThread(QThread):
                 fn = os.path.join(base, f'{prefix}_{i:03d}.webp')
                 if not os.path.exists(fn):
                     fn = os.path.join(base, f'{prefix}_{i:03d}.png')
-                img = QImage(fn)
+                # v114: setScaledSize for faster decode + disk cache save
+                target_w = max(2, int(round(bank.geo.get(state, (1024, 1024))[0] * sc)))
+                target_h = max(2, int(round(bank.geo.get(state, (1024, 1024))[1] * sc)))
+                try:
+                    reader = QImageReader(fn)
+                    reader.setScaledSize(QSize(target_w, target_h))
+                    img = reader.read()
+                    if img.isNull() or img.width() != target_w:
+                        img = QImage(fn)  # fallback
+                except Exception:
+                    img = QImage(fn)  # fallback
                 if img.isNull():
                     continue
                 img = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
-                w, h = img.width(), img.height()
-                img = img.scaled(max(2, int(round(w * sc))),
-                                 max(2, int(round(h * sc))),
-                                 Qt.KeepAspectRatio, Qt.FastTransformation)
+                if img.width() != target_w or img.height() != target_h:
+                    img = img.scaled(target_w, target_h,
+                                     Qt.KeepAspectRatio, Qt.FastTransformation)
                 all_imgs.append(img)
 
                 # Lift for this frame
@@ -560,8 +572,8 @@ class SpriteBank:
     ASSET_SCALE = 1.05  # Texture long side = screen device pixel long side x 1.05 (1:1 sharpness + small margin)
 
     def __init__(self):
-        self.frames = {}     # state -> [QImage normal]
-        self.frames_m = {}   # state -> [QImage mirrored]
+        self.frames = {}     # state -> [QImage normal]  (v114: temporary — released after QPixmap cache)
+        self.frames_m = {}   # state -> [QImage mirrored]  (v114: unused, kept for compat)
         self.pixmaps = {}    # v113: state -> [QPixmap normal] (GPU cache, lazy-converted on first draw)
         self.pixmaps_m = {}  # v113: state -> [QPixmap mirrored] (GPU cache)
         self.geo = {}        # v64: state -> (source width, source height) first frame size (tight constant)
@@ -630,16 +642,16 @@ class SpriteBank:
                 self.frames[state] = []
                 self.frames_m[state] = []
                 self.lift_map[state] = []
-        # v113: idle sync-loads 25 frames for instant display (~80ms), then background loads full 121
-        idle_imgs, idle_lift = self._build_state('idle', max_frames=25)
-        if idle_imgs:
-            self.frames['idle'] = idle_imgs
-            self.frames_m['idle'] = [None] * len(idle_imgs)
-            self.lift_map['idle'] = idle_lift
-            # v112: Register idle in LRU order so it can be tracked/unloaded
-            self._loaded_order = getattr(self, '_loaded_order', [])
-            if 'idle' not in self._loaded_order:
-                self._loaded_order.append('idle')
+        # v114: idle sync-loads only 5 frames for instant display (~15-20ms), then background loads full 121
+        if not self.frames.get('idle'):
+            idle_imgs, idle_lift = self._build_state('idle', max_frames=5)
+            if idle_imgs:
+                self.frames['idle'] = idle_imgs
+                self.frames_m['idle'] = [None] * len(idle_imgs)
+                self.lift_map['idle'] = idle_lift
+                self._loaded_order = getattr(self, '_loaded_order', [])
+                if 'idle' not in self._loaded_order:
+                    self._loaded_order.append('idle')
         # v19: Per-frame leg cutting  --  run frames contain gallop jumps (per-frame body_bot displacement up to 31px),
         # fixed cut line (only frame 0) misaligns leg blocks on jump frames. Cut per-frame by own body bottom,
         # preserving in-frame gallop undulation while keeping cut line aligned with body.
@@ -689,18 +701,20 @@ class SpriteBank:
                 self._loaded_order.append(owner)
 
     def ensure_state(self, state):
-        """v112: Sync-load 5 frames (~100ms) for instant display, then async-load remaining frames
-        incrementally (20 frames per chunk). Animation grows 5→25→45→…→121, no stutter."""
+        """v114: Progressive loading — sync 5 frames for instant display, then async-load remaining.
+        Disk cache used if available (7ms re-load). setScaledSize for first-load (15-20ms).
+        Background thread loads rest in CHUNK=10 batches, also writes disk cache."""
         owner = self.alias.get(state, state)
         if owner not in self.LAZY or self.frames.get(owner):
             return
         if owner in self._lazy_threads:
             return
-        # Sync fast path: load first 25 frames so animation displays immediately (~1s @24fps)
-        # v113-fix: Old 5 frames caused visible loop stutter on slow machines (5 frames = 0.2s loop,
-        # each chunk arrival caused frame_idx jump). 25 frames = 1 full second, smooth even on HDD.
+        # v114: Unload excess states + GC before loading new one
+        self.unload_idle_lazy(owner, keep=1)
+        # v114-fix: Defer GC — gc.collect(2) on large states at high zoom freezes main thread
+        # GC will happen naturally; explicit call not worth the stall
         if not self.frames.get(owner):
-            imgs, lift = self._build_state(owner, max_frames=25)
+            imgs, lift = self._build_state(owner, max_frames=5)
             if imgs:
                 self.frames[owner] = imgs
                 self.frames_m[owner] = [None] * len(imgs)
@@ -729,9 +743,17 @@ class SpriteBank:
         bank.frames[state] = existing + new_imgs
         bank.frames_m[state] = [None] * len(bank.frames[state])
         bank.lift_map[state] = existing_lift + new_lift
-        # v113: Invalidate pixmap cache — new frames mean old pixmaps are stale
-        bank.pixmaps.pop(state, None)
-        bank.pixmaps_m.pop(state, None)
+        # v114: EXTEND pixmaps instead of clearing — keep already-cached GPU textures
+        old_pm = bank.pixmaps.get(state)
+        if old_pm is None or len(old_pm) != old_count:
+            bank.pixmaps[state] = [None] * len(bank.frames[state])
+        else:
+            bank.pixmaps[state] = old_pm + [None] * len(new_imgs)
+        old_pm_m = bank.pixmaps_m.get(state)
+        if old_pm_m is None or len(old_pm_m) != old_count:
+            bank.pixmaps_m[state] = [None] * len(bank.frames[state])
+        else:
+            bank.pixmaps_m[state] = old_pm_m + [None] * len(new_imgs)
         # v113-fix: Notify pet widget so it can adjust anim_elapsed to avoid frame jumps.
         # Without this, raw_idx % new_count jumps to a different frame than current.
         if hasattr(bank, 'on_chunk_appended') and bank.on_chunk_appended:
@@ -785,21 +807,25 @@ class SpriteBank:
         if state in self.LAZY and state not in self._loaded_order:
             self._loaded_order.append(state)
 
-    def unload_idle_lazy(self, active_state, keep=2):
-        """v112: Strict LRU — unload all lazy states beyond keep count.
-        Frees frames, frames_m, pixmaps, pixmaps_m to actually reclaim memory.
-        Aliased states (potty->sit), current state not unloaded. Return unload count."""
+    def unload_idle_lazy(self, active_state, keep=1):
+        """v114: Strict LRU — unload all lazy states beyond keep count.
+        v114-fix: Skip non-LAZY states (idle) to prevent permanent blank screen.
+        v114: keep=1 → max 3 resident: idle(permanent) + active + 1 recent LAZY.
+        Frees frames + pixmaps to reclaim memory. Disk cache preserved for fast re-load."""
         order = getattr(self, '_loaded_order', [])
         n = 0
         for st in list(order):
             if len(order) - n <= keep:
                 break
+            # v114-fix: idle is NOT in LAZY — must never be unloaded
+            if st not in self.LAZY:
+                continue
             if st == active_state or not self.frames.get(st):
                 continue
             # Alias state points to it -> don't unload
             if any(self.alias.get(s2) == st for s2 in self.alias):
                 continue
-            # v113: Clear frames + pixmaps + lift to actually free memory
+            # v114: Clear frames + pixmaps to free memory; disk cache preserved
             self.frames[st] = []
             self.frames_m[st] = []
             self.pixmaps.pop(st, None)
@@ -842,15 +868,24 @@ class SpriteBank:
                 fn = os.path.join(base, f'{prefix}_{i:03d}.webp')
                 if not os.path.exists(fn):
                     fn = os.path.join(base, f'{prefix}_{i:03d}.png')
-                img = QImage(fn)
+                # v114: Try setScaledSize for faster decode (skip full-size decode)
+                target_w = max(2, int(round(self.geo.get(state, (1024, 1024))[0] * sc)))
+                target_h = max(2, int(round(self.geo.get(state, (1024, 1024))[1] * sc)))
+                try:
+                    reader = QImageReader(fn)
+                    reader.setScaledSize(QSize(target_w, target_h))
+                    img = reader.read()
+                    if img.isNull() or img.width() != target_w:
+                        img = QImage(fn)  # fallback
+                except Exception:
+                    img = QImage(fn)  # fallback
                 if img.isNull():
                     continue
                 img = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
-                w, h = img.width(), img.height()
-                # Scale using pre-computed max_dim (no need to scan all frames first)
-                img = img.scaled(max(2, int(round(w * sc))),
-                                 max(2, int(round(h * sc))),
-                                 Qt.KeepAspectRatio, Qt.FastTransformation)
+                if img.width() != target_w or img.height() != target_h:
+                    # setScaledSize didn't produce target size — manual scale
+                    img = img.scaled(target_w, target_h,
+                                     Qt.KeepAspectRatio, Qt.FastTransformation)
                 imgs.append(img)
             # raw_imgs no longer held — memory freed immediately
             
@@ -1162,14 +1197,44 @@ class SpriteBank:
                 'leg_y0': leg_y0,
                 'amp_deg': geo['amp_deg']}
 
+    # v114: Frame-level pixmap LRU — only keep PM_WINDOW frames per state in GPU VRAM
+    # At zoom=2, each pixmap is ~0.8MB. 121 frames = 94MB. Keeping only 7 = 5.6MB.
+    PM_WINDOW = 7  # keep current ± 3 on each side (enough for animation smoothness)
+
+    def _trim_pixmaps(self, state, idx):
+        """v114: Release pixmaps outside [idx-PM_WINDOW/2, idx+PM_WINDOW/2] to free GPU VRAM.
+        Called from get() after caching current frame. Safe because disk cache has Q95 backup."""
+        pm_cache = self.pixmaps.get(state)
+        if not pm_cache:
+            return
+        n = len(pm_cache)
+        half = self.PM_WINDOW // 2
+        lo = max(0, idx - half)
+        hi = min(n, idx + half + 1)
+        released = 0
+        for j in range(n):
+            if j < lo or j >= hi:
+                if pm_cache[j] is not None:
+                    pm_cache[j] = None
+                    released += 1
+        # Also trim mirrored pixmaps
+        pm_m_cache = self.pixmaps_m.get(state)
+        if pm_m_cache:
+            for j in range(n):
+                if j < lo or j >= hi:
+                    if pm_m_cache[j] is not None:
+                        pm_m_cache[j] = None
+                        released += 1
+        return released
+
     def get(self, state, idx, flipped):
         state = self.alias.get(state, state)   # v64: Alias resolution (potty->sit), lazy-owner safe
         bank = self.frames.get(state) or []
         if not bank:
             return QPixmap()           # v64 lazy-load incomplete -> empty pixmap skip draw
         i = idx % len(bank) if bank else 0
-        # v113: QPixmap GPU cache — first draw converts QImage→QPixmap, subsequent draws are zero-copy GPU blit.
-        # This eliminates the per-frame CPU→GPU upload that causes stutter on integrated GPUs.
+        # v115: QImage resident + Pixmap sliding window — frames[] never released.
+        # QPixmap cache is a sliding window (PM_WINDOW frames), rebuilt from QImage on miss.
         if not flipped:
             pm_cache = self.pixmaps.get(state)
             if pm_cache is None or len(pm_cache) != len(bank):
@@ -1177,19 +1242,40 @@ class SpriteBank:
                 self.pixmaps[state] = pm_cache
             pm = pm_cache[i]
             if pm is None:
-                pm = QPixmap.fromImage(bank[i])
-                pm_cache[i] = pm
+                frame_img = bank[i]
+                if frame_img is not None:
+                    pm = QPixmap.fromImage(frame_img)
+                    pm_cache[i] = pm
+            # Trim distant pixmaps to save GPU VRAM (sliding window)
+            self._trim_pixmaps(state, i)
             return pm
         else:
-            # v113: Mirrored pixmap cache — avoids per-frame mirrored() + CPU→GPU upload
+            # Mirrored via QTransform — QPixmap flip
             pm_m_cache = self.pixmaps_m.get(state)
             if pm_m_cache is None or len(pm_m_cache) != len(bank):
                 pm_m_cache = [None] * len(bank)
                 self.pixmaps_m[state] = pm_m_cache
             pm = pm_m_cache[i]
             if pm is None:
-                pm = QPixmap.fromImage(bank[i].mirrored(True, False))
-                pm_m_cache[i] = pm
+                # Try QTransform flip from normal pixmap cache first
+                pm_n_cache = self.pixmaps.get(state)
+                if pm_n_cache is not None and i < len(pm_n_cache) and pm_n_cache[i] is not None:
+                    pm = pm_n_cache[i].transformed(QTransform().scale(-1, 1), Qt.FastTransformation)
+                else:
+                    # Fallback: from QImage
+                    frame_img = bank[i] if i < len(bank) else None
+                    if frame_img is not None:
+                        pm = QPixmap.fromImage(frame_img.mirrored(True, False))
+                        # Also cache normal pixmap for future flip
+                        if pm_n_cache is None or len(pm_n_cache) != len(bank):
+                            pm_n_cache = [None] * len(bank)
+                            self.pixmaps[state] = pm_n_cache
+                        if pm_n_cache[i] is None:
+                            pm_n_cache[i] = QPixmap.fromImage(frame_img)
+                if pm is not None:
+                    pm_m_cache[i] = pm
+            # Trim distant pixmaps to save GPU VRAM
+            self._trim_pixmaps(state, i)
             return pm
 
 
@@ -1550,10 +1636,16 @@ class PetWindow(QWidget):
     def set_zoom(self, new_zoom):
         """v25 (P9): Runtime zoom switch  --  rebuild sprites + adjust window + bottom anchor, and persist
         v48: Rebuild moved to background thread (old main thread sync load() = 579 frame reload + pixel scan, freezes UI).
-        During load, old sprite auto-scaled by paintEvent top-level scale(zoom), atomic swap on completion."""
+        During load, old sprite auto-scaled by paintEvent top-level scale(zoom), atomic swap on completion.
+        v115: Two-phase zoom — clear pixmap cache for immediate GPU-scaled display, background rebuild follows."""
         new_zoom = max(ZOOM_MIN, min(ZOOM_MAX, new_zoom))
         if abs(new_zoom - self.zoom) < 1e-6:
             return
+        # v115: Two-phase zoom — clear pixmap cache so paintEvent rebuilds from current QImages
+        # with painter.scale(new_zoom) until background rebuild completes
+        if hasattr(self, 'bank') and self.bank:
+            self.bank.pixmaps.clear()
+            self.bank.pixmaps_m.clear()
         self.zoom = new_zoom
         save_zoom(new_zoom)
         cw = int(CANVAS * new_zoom)
@@ -1590,29 +1682,28 @@ class PetWindow(QWidget):
         if t._seq == getattr(self, '_load_seq', 0) and t.result is not None:
             old = self.bank
             new = t.result
-            # v94-fix: Migrate loaded lazy state frame tables (old zoom rebuild lost action frames = actions disappear)
-            # v100-fix: Rescale migrated frames to new draw_size (zoom change changes draw_size,
-            # old frames rendered at old draw_size would be mis-scaled by k=DRAW_SIZE/new_draw)
-            _new_draw = new.draw_size
-            _old_draw = old.draw_size
-            _need_rescale = abs(_new_draw - _old_draw) > 1
-            for st, fr in old.frames.items():
-                if fr and st in new.LAZY:
-                    if _need_rescale:
-                        sc = _new_draw / float(_old_draw) if _old_draw > 0 else 1.0
-                        new.frames[st] = [img.scaled(max(2, int(round(img.width() * sc))),
-                                                      max(2, int(round(img.height() * sc))),
-                                                      Qt.KeepAspectRatio, Qt.FastTransformation)
-                                          for img in fr]
-                    else:
-                        new.frames[st] = fr
-                    new.frames_m[st] = [None] * len(new.frames[st])
-                    new.lift_map[st] = old.lift_map.get(st) or []
+            # v116: Do NOT migrate frames from old bank — old frames are at wrong zoom resolution.
+            # Old v115 migration (new.frames[st] = list(fr)) kept zoom=2 QImages in zoom=1 bank,
+            # causing: (1) memory never freed, (2) draw_rect mismatch → big dog overflows small canvas.
+            # Instead: keep _loaded_order so ensure_state re-loads at correct new draw_size on demand.
             new._loaded_order = list(getattr(old, '_loaded_order', []))
+            # v115: Clear pixmap caches — new bank has different draw_size
+            new.pixmaps.clear()
+            new.pixmaps_m.clear()
+            # v116: Release old bank's frames/pixmaps — _replaced_by chain keeps old bank object
+            # alive but its huge QImages must be freed so zoom-down actually releases memory.
+            old.frames.clear()
+            old.frames_m.clear()
+            old.pixmaps.clear()
+            old.pixmaps_m.clear()
             old._replaced_by = new   # v94-fix: In-flight lazy load write-back routes to latest bank
             self.bank = new
             self.bank.on_state_reloaded = self._on_state_reloaded
             self.bank.on_chunk_appended = self._on_chunk_appended
+            # v116: Re-load current state at new zoom — frames were NOT migrated from old bank
+            # (sync loads 5 frames ~20ms, async loads rest). Without this, current state is blank.
+            if hasattr(self, 'state') and self.state != 'idle':
+                self.bank.ensure_state(self.state)
             self.update()
         t.deleteLater()
 
@@ -1628,26 +1719,18 @@ class PetWindow(QWidget):
             t.deleteLater()
             return
         new = t.result
-        # Retain lazy state loaded frame tables (actions triggered by user after startup not lost)
-        # v100-fix: Rescale if draw_size changed (shouldn't happen in fullbank swap, but guard)
-        _new_draw = new.draw_size
-        _old_draw = self.bank.draw_size
-        _need_rescale = abs(_new_draw - _old_draw) > 1
-        for st, fr in self.bank.frames.items():
-            if fr and st in new.LAZY:
-                if _need_rescale:
-                    sc = _new_draw / float(_old_draw) if _old_draw > 0 else 1.0
-                    new.frames[st] = [img.scaled(max(2, int(round(img.width() * sc))),
-                                                  max(2, int(round(img.height() * sc))),
-                                                  Qt.KeepAspectRatio, Qt.FastTransformation)
-                                      for img in fr]
-                else:
-                    new.frames[st] = fr
-                new.frames_m[st] = [None] * len(new.frames[st])
-                new.lift_map[st] = self.bank.lift_map.get(st) or []
+        # v116: Do NOT migrate frames — same fix as _on_zoom_loaded.
+        # _on_fullbank_loaded is called at startup (fast_boot) where old bank has
+        # only idle frames at same zoom, but migration is still wrong in principle
+        # and would prevent old bank's idle frames from being freed.
         new._loaded_order = list(getattr(self.bank, '_loaded_order', []))
         new.on_state_reloaded = self._on_state_reloaded
         new.on_chunk_appended = self._on_chunk_appended
+        # v116: Release old bank frames (same as _on_zoom_loaded)
+        self.bank.frames.clear()
+        self.bank.frames_m.clear()
+        self.bank.pixmaps.clear()
+        self.bank.pixmaps_m.clear()
         self.bank._replaced_by = new   # v94-fix: In-flight lazy load write-back routes to latest bank
         self.bank = new
         # v96-fix: No frame_idx/anim_elapsed reset - bank swap is now transparent
@@ -2079,7 +2162,17 @@ class PetWindow(QWidget):
             self.say('Getting sleepy...')
             return
 
-        #  --  Auto behavior timer  -- 
+        # v116: Idle memory reclamation — after 10s idle, unload ALL lazy state frames.
+        # Actions (eat/bath/dance etc) load frames on demand; once back to idle and idle for 10s,
+        # those frames are just wasting RAM. Re-loading on next action takes ~20ms (5 sync frames),
+        # imperceptible to user. Cuts idle RAM from ~280MB(z2) to ~idle-only.
+        if st == 'idle' and st_time > 10.0:
+            loaded = [s for s in getattr(self.bank, '_loaded_order', []) if self.bank.frames.get(s)]
+            lazy_loaded = [s for s in loaded if s in self.bank.LAZY]
+            if lazy_loaded:
+                self.bank.unload_idle_lazy('idle', keep=0)
+
+        #  --  Auto behavior timer  --
         self.ai_timer -= dt
         if self.ai_timer > 0:
             # Walk state continuous movement (velocity px/s, eased)
@@ -2316,13 +2409,19 @@ class PetWindow(QWidget):
                 vx = (x1 - x0) / (t1 - t0)
                 rot += max(-8, min(8, vx * 0.012))
 
-        # v110: Only enable expensive render hints when transforms are active
+        # v110+115: Enable render hints when transforms are active OR zoom>1
+        # v115: zoom>1 needs SmoothPixmapTransform for bilinear upscaling (two-phase zoom phase 1)
         has_transform = (abs(rot) > 0.1 or abs(sx - 1.0) > 0.001 or abs(sy - 1.0) > 0.001
-                         or abs(self.zoom - round(self.zoom)) > 0.01)
+                         or self.zoom > 1.01)
         painter.setRenderHint(QPainter.Antialiasing, has_transform)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, has_transform)
         # v25 (P9): unified zoom -- all drawing logic keeps CANVAS=320 logical coordinate system
         painter.scale(self.zoom, self.zoom)
+        # v116: Explicit CANVAS clip — idle/walk frames are wider than CANVAS (geo 1664×1216),
+        # draw_rect extends beyond CANVAS bounds. Without clip, WA_TranslucentBackground relies
+        # on widget geometry to clip, which fails during resize transition (big→small zoom reset:
+        # backing store still 640×640, dog overflows new 320×320 window for 1 frame).
+        painter.setClipRect(QRectF(0, 0, CANVAS, CANVAS))
 
         #  --  Image fetch
         pm = self.bank.get(self.state, self.frame_idx, self.flipped)

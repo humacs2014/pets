@@ -49,3 +49,7 @@ keyhex.txt
 *.ico
 zoom_config.json
 MAC版本/
+
+# v116: Exclude large/obsolete directories
+electron_pet/
+identity_candidates/
