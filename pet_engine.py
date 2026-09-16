@@ -1907,9 +1907,35 @@ class PetWindow(QWidget):
             self._tick_cur = tgt
             self.timer.setInterval(tgt)
         # v66: static and frame unchanged -> skip redraw (transparent window no change = zero draw CPU)
-        if (active or moving
-                or getattr(self, '_last_drawn', None) != (self.state, self.frame_idx, self.flipped)):
-            self.update()
+        # v113: Dirty-rect update — only mark changed region, reduces backing store upload on integrated GPUs.
+        # macOS layer-backed: self.update() uploads the ENTIRE backing store (~1.6MB @Retina DPR=2),
+        # but self.update(QRect) only uploads the dirty region, cutting bandwidth proportionally.
+        frame_changed = getattr(self, '_last_drawn', None) != (self.state, self.frame_idx, self.flipped)
+        if active or moving or frame_changed:
+            if active and not moving and not frame_changed:
+                # Only particles/physics/transition active — mark just their bounding rects
+                # instead of full window. Falls back to full update if rect calc fails.
+                try:
+                    rects = []
+                    for p in self.particles.particles:
+                        s = p['size']
+                        rects.append(QRect(int(p['x'] - s), int(p['y'] - s),
+                                           int(s * 3), int(s * 3)))
+                    if self.pop_t > 0 or self.antic_t > 0 or self.settle_t > 0:
+                        rects.append(QRect(0, 0, self.width(), self.height()))
+                    if self.turn_phase is not None or self.micro is not None:
+                        rects.append(QRect(0, 0, self.width(), self.height()))
+                    if self.physics.active:
+                        rects.append(QRect(0, 0, self.width(), self.height()))
+                    if rects:
+                        for r in rects:
+                            self.update(r)
+                    else:
+                        self.update()
+                except Exception:
+                    self.update()
+            else:
+                self.update()
 
     #  --  --  --  --  -- ─ Behavior AI  --  --  --  --  -- ─
     def update_ai(self, dt):
@@ -2154,6 +2180,12 @@ class PetWindow(QWidget):
     # ---------- Drawing (core: hybrid rendering) ----------
     def paintEvent(self, event):
         painter = QPainter(self)
+        # v113: Clip to dirty rect — on macOS layer-backed windows, the backing store
+        # only needs to fill the dirty region. Without this, every paintEvent redraws
+        # the entire 640×640 pixel buffer even when only a small particle area changed.
+        clip = event.rect()
+        if not clip.isEmpty() and clip != QRect(0, 0, self.width(), self.height()):
+            painter.setClipRect(clip)
         # v110: Compute transforms first to decide render hints
         now = time.perf_counter()
         t = now - self.state_started
