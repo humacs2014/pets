@@ -38,7 +38,7 @@ from PyQt5.QtWidgets import QApplication, QWidget
 from PyQt5.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QRect, QThread, QEventLoop, QEvent, pyqtSignal
 from PyQt5.QtGui import (
     QPainter, QPen, QBrush, QColor, QPainterPath, QFont, QFontMetrics,
-    QImage, QImageReader, QCursor, QRadialGradient, QLinearGradient
+    QImage, QImageReader, QPixmap, QCursor, QRadialGradient, QLinearGradient
 )
 
 # Cross-platform font: macOS has no Microsoft YaHei, fallback to system sans
@@ -562,6 +562,8 @@ class SpriteBank:
     def __init__(self):
         self.frames = {}     # state -> [QImage normal]
         self.frames_m = {}   # state -> [QImage mirrored]
+        self.pixmaps = {}    # v113: state -> [QPixmap normal] (GPU cache, lazy-converted on first draw)
+        self.pixmaps_m = {}  # v113: state -> [QPixmap mirrored] (GPU cache)
         self.geo = {}        # v64: state -> (source width, source height) first frame size (tight constant)
         self.alias = {}      # v64: state -> frame table owner (potty->sit etc, dedup no double-load)
         self._lazy_threads = {}
@@ -724,6 +726,9 @@ class SpriteBank:
         bank.frames[state] = existing + new_imgs
         bank.frames_m[state] = [None] * len(bank.frames[state])
         bank.lift_map[state] = existing_lift + new_lift
+        # v113: Invalidate pixmap cache — new frames mean old pixmaps are stale
+        bank.pixmaps.pop(state, None)
+        bank.pixmaps_m.pop(state, None)
 
     def _on_lazy_done(self, state, t):
         self._lazy_threads.pop(state, None)
@@ -775,7 +780,7 @@ class SpriteBank:
 
     def unload_idle_lazy(self, active_state, keep=2):
         """v112: Strict LRU — unload all lazy states beyond keep count.
-        Frees both frames AND frames_m to actually reclaim memory.
+        Frees frames, frames_m, pixmaps, pixmaps_m to actually reclaim memory.
         Aliased states (potty->sit), current state not unloaded. Return unload count."""
         order = getattr(self, '_loaded_order', [])
         n = 0
@@ -787,9 +792,11 @@ class SpriteBank:
             # Alias state points to it -> don't unload
             if any(self.alias.get(s2) == st for s2 in self.alias):
                 continue
-            # v112: Clear both frames AND frames_m + lift to actually free memory
+            # v113: Clear frames + pixmaps + lift to actually free memory
             self.frames[st] = []
             self.frames_m[st] = []
+            self.pixmaps.pop(st, None)
+            self.pixmaps_m.pop(st, None)
             self.lift_map[st] = []
             order.remove(st)
             n += 1
@@ -1152,15 +1159,31 @@ class SpriteBank:
         state = self.alias.get(state, state)   # v64: Alias resolution (potty->sit), lazy-owner safe
         bank = self.frames.get(state) or []
         if not bank:
-            return QImage()           # v64 lazy-load incomplete -> empty image skip draw
+            return QPixmap()           # v64 lazy-load incomplete -> empty pixmap skip draw
         i = idx % len(bank) if bank else 0
-        img = bank[i]
-        if img.isNull():
-            return QImage()
-        # v112: No mirror caching — mirrored() takes 0.04ms, saves 50% memory
-        if flipped:
-            return img.mirrored(True, False)
-        return img
+        # v113: QPixmap GPU cache — first draw converts QImage→QPixmap, subsequent draws are zero-copy GPU blit.
+        # This eliminates the per-frame CPU→GPU upload that causes stutter on integrated GPUs.
+        if not flipped:
+            pm_cache = self.pixmaps.get(state)
+            if pm_cache is None or len(pm_cache) != len(bank):
+                pm_cache = [None] * len(bank)
+                self.pixmaps[state] = pm_cache
+            pm = pm_cache[i]
+            if pm is None:
+                pm = QPixmap.fromImage(bank[i])
+                pm_cache[i] = pm
+            return pm
+        else:
+            # v113: Mirrored pixmap cache — avoids per-frame mirrored() + CPU→GPU upload
+            pm_m_cache = self.pixmaps_m.get(state)
+            if pm_m_cache is None or len(pm_m_cache) != len(bank):
+                pm_m_cache = [None] * len(bank)
+                self.pixmaps_m[state] = pm_m_cache
+            pm = pm_m_cache[i]
+            if pm is None:
+                pm = QPixmap.fromImage(bank[i].mirrored(True, False))
+                pm_m_cache[i] = pm
+            return pm
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2225,15 +2248,15 @@ class PetWindow(QWidget):
         painter.scale(self.zoom, self.zoom)
 
         #  --  Image fetch
-        img = self.bank.get(self.state, self.frame_idx, self.flipped)
-        if img.isNull():
+        pm = self.bank.get(self.state, self.frame_idx, self.flipped)
+        if pm.isNull():
             # v99b: New state not loaded yet — keep showing last valid frame (no black flash)
-            img = self._last_frame if hasattr(self, '_last_frame') and not self._last_frame.isNull() else QImage()
-            if img.isNull():
+            pm = self._last_frame if hasattr(self, '_last_frame') and not self._last_frame.isNull() else QPixmap()
+            if pm.isNull():
                 painter.end()
                 return
         else:
-            self._last_frame = img
+            self._last_frame = pm
 
         # -- apply transforms and draw --
         painter.save()
@@ -2250,7 +2273,7 @@ class PetWindow(QWidget):
         _owner = self.bank.alias.get(self.state, self.state)
         _draw = self.bank._state_draw(_owner) if _owner in self.bank.TIGHT else max(96, min(self.bank.draw_size, 1024))
         k = DRAW_SIZE / _draw
-        _iw, _ih = img.width(), img.height()
+        _iw, _ih = pm.width(), pm.height()
         draw_rect = QRectF(-_iw * k / 2, -_ih * k + GROUND_PAD, _iw * k, _ih * k)
         #  --  Leg rig rendering (Paper-Doll Rig): real walking swing  -- 
         # v19: Source legs frozen, runtime splits sprite into rear-leg -> body -> front-leg three layers,
@@ -2284,7 +2307,8 @@ class PetWindow(QWidget):
             painter.drawImage(QRectF(-fpx, -fpy, fp.width(), fp.height()), fp)
             painter.restore()
         else:
-            painter.drawImage(draw_rect, img)
+            # v113: drawPixmap = zero-copy GPU blit (was drawImage = CPU→GPU upload each frame)
+            painter.drawPixmap(draw_rect, pm, QRectF(0, 0, _iw, _ih))
 
         #  --  Breathing layer overlay: v7 disabled  -- 
         # 3D skeletal animation has real chest rise/fall, old 2D asset chest coordinates misalign with 3D model,
