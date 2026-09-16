@@ -17,46 +17,75 @@ import os, sys, tempfile
 from pathlib import Path
 
 
-def create_background(width=1200, height=780):
+def create_background(output_path, width=600, height=390):
     """Generate a standard macOS DMG background PNG.
 
-    White background, mimics the native macOS drag-to-Install experience:
-    left side = app icon area, right side = Applications area,
-    with a subtle right-pointing arrow between them.
+    White background with a subtle gray arrow pointing from App icon (left)
+    to Applications (right). Exact dimensions match the DMG window size
+    in points (non-Retina). For Retina, dmgbuild auto-detects @2x versions
+    in the same directory and merges them into a multi-resolution TIFF.
 
-    width/height are @2x pixels (window is 600x390 points on Retina).
+    Args:
+        output_path: Where to save the PNG (the 1x version).
+        width/height: Window size in points (1x pixels).
     """
     try:
         from PIL import Image, ImageDraw
     except ImportError:
         print("WARN: Pillow not installed, DMG will have no background image")
-        return None
+        return False
 
+    # --- 1x version (600x390) ---
     img = Image.new('RGB', (width, height), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    # Arrow: subtle gray, centered vertically, spanning from app area to Applications area
-    # App icon at ~x=130pts (=260@2x center), Applications at ~x=460pts (=920@2x center)
+    # Arrow from app area (~x=130) to Applications area (~x=460)
     arrow_y = height // 2
-    arrow_left = 340    # @2x: just right of app icon
-    arrow_right = 840   # @2x: just left of Applications icon
+    arrow_left = 175
+    arrow_right = 425
     arrow_color = (180, 180, 180)
 
-    # Horizontal band
-    band_h = 8  # thin band
+    band_h = 4
     draw.rectangle([arrow_left, arrow_y - band_h // 2, arrow_right, arrow_y + band_h // 2],
                    fill=arrow_color)
 
-    # Arrow head (right-pointing triangle)
-    head_w = 36
-    head_h = 28
+    head_w = 18
+    head_h = 14
     draw.polygon([
         (arrow_right, arrow_y - head_h),
         (arrow_right + head_w, arrow_y),
         (arrow_right, arrow_y + head_h),
     ], fill=arrow_color)
 
-    return img
+    img.save(output_path, "PNG")
+    print(f"Background 1x saved to {output_path}")
+
+    # --- @2x version (1200x780) ---
+    base, ext = os.path.splitext(output_path)
+    ret_path = f"{base}@2x{ext}"
+    img2 = Image.new('RGB', (width * 2, height * 2), (255, 255, 255))
+    draw2 = ImageDraw.Draw(img2)
+
+    arrow_y2 = height  # center of 2x image
+    arrow_left2 = arrow_left * 2
+    arrow_right2 = arrow_right * 2
+
+    band_h2 = band_h * 2
+    draw2.rectangle([arrow_left2, arrow_y2 - band_h2 // 2, arrow_right2, arrow_y2 + band_h2 // 2],
+                    fill=arrow_color)
+
+    head_w2 = head_w * 2
+    head_h2 = head_h * 2
+    draw2.polygon([
+        (arrow_right2, arrow_y2 - head_h2),
+        (arrow_right2 + head_w2, arrow_y2),
+        (arrow_right2, arrow_y2 + head_h2),
+    ], fill=arrow_color)
+
+    img2.save(ret_path, "PNG")
+    print(f"Background @2x saved to {ret_path}")
+
+    return True
 
 
 def build_dmg(app_path, output_path, volname="GoldenVestPet"):
@@ -74,59 +103,55 @@ def build_dmg(app_path, output_path, volname="GoldenVestPet"):
         print(f"FAIL: {app_path} not found")
         sys.exit(1)
 
-    app_name = os.path.basename(app_path)  # e.g. "GoldenVestPet.app"
+    app_name = os.path.basename(app_path)
 
-    # Generate background image
-    bg_img = create_background()
-    bg_path = None
-    if bg_img is not None:
-        bg_path = os.path.join(tempfile.gettempdir(), "dmg_background.png")
-        bg_img.save(bg_path, "PNG")
-        print(f"Background image saved to {bg_path}")
+    # Generate background images (1x + @2x for Retina)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    bg_dir = os.path.join(script_dir, "_dmg_bg_tmp")
+    os.makedirs(bg_dir, exist_ok=True)
+    bg_path = os.path.join(bg_dir, "background.png")
+    has_bg = create_background(bg_path)
 
-    # dmgbuild settings
-    settings = {
-        # Files to include
-        'files': [app_path],
-        # Symlinks
-        'symlinks': {'Applications': '/Applications'},
-        # v117: Use ULFO (lzfse) compression instead of default UDZO (zlib).
-        # ULFO is Apple's native compression format — decompresses 3-5x faster than zlib,
-        # so dragging .app to Applications is fast throughout (no late-stage slowdown).
-        # UDZO forces macOS to decompress blocks in real-time during copy; large files
-        # at the end of the image hit the slowest decompression paths.
-        # ULFO requires macOS 10.11+ (El Capitan), which covers all supported Macs.
-        'format': 'ULFO',
-        # Icon view settings
-        'view': 'icon-view',
-        'icon_size': 128,
-        'text_size': 16,
-        'icon_locations': {
-            app_name: (140, 190),       # Left side
-            'Applications': (460, 190), # Right side
-        },
-        # Window settings (points, not pixels)
-        'window_rect': ((100, 100), (600, 390)),
-        # Hide toolbar and statusbar for clean look
-        'toolbar_visible': False,
-        'statusbar_visible': False,
-        # White background with arrow (standard macOS install experience)
-        'background': bg_path if bg_path else None,
-        # Volume icon (use app's .icns if available)
-        'icon': None,
-    }
+    # Write a dmgbuild settings file — this is the most reliable way to
+    # pass settings because dmgbuild exec()'s the file as Python code,
+    # ensuring all variables (especially 'background' path) are resolved
+    # in the correct context.
+    settings_path = os.path.join(bg_dir, "dmg_settings.py")
+    settings_content = f'''
+# Auto-generated dmgbuild settings
+files = [{app_path!r}]
+symlinks = {{"Applications": "/Applications"}}
+format = 'ULFO'
+default_view = 'icon-view'
+icon_size = 128
+text_size = 16
+icon_locations = {{
+    {app_name!r}: (140, 190),
+    "Applications": (460, 190),
+}}
+window_rect = ((100, 100), (600, 390))
+show_toolbar = False
+show_status_bar = False
+show_pathbar = False
+show_sidebar = False
+background = {bg_path!r}
+'''
+    with open(settings_path, 'w') as f:
+        f.write(settings_content)
+    print(f"Settings file written to {settings_path}")
 
-    # Build
+    # Build using settings file (not dict) — most reliable for background images
     print(f"Building DMG: {output_path}")
     dmgbuild.build_dmg(
         filename=output_path,
         volume_name=volname,
-        settings=settings,
+        settings_file=settings_path,
     )
 
     # Cleanup
-    if bg_path and os.path.exists(bg_path):
-        os.remove(bg_path)
+    import shutil
+    if os.path.exists(bg_dir):
+        shutil.rmtree(bg_dir)
 
     size_mb = os.path.getsize(output_path) / 1024 / 1024
     print(f"=== DMG created: {output_path} ({size_mb:.1f} MB) ===")
