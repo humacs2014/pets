@@ -2,9 +2,10 @@
 """make_dmg.py — Build a styled macOS DMG with dmgbuild (no Finder/AppleScript needed).
 
 Produces a DMG with:
-  - Custom background image (left: app icon area, right: Applications arrow)
+  - White background with standard macOS install layout (App icon → arrow → Applications)
   - Proper icon positions (app left, Applications symlink right)
   - Icon view with 128pt icons, no toolbar/statusbar
+  - ULFO (lzfse) compression for fast drag-to-Applications copy speed
 
 Usage (on macOS):
     python make_dmg.py GoldenVestPet.app GoldenVestPet.dmg
@@ -12,13 +13,18 @@ Usage (on macOS):
 Dependencies: pip install dmgbuild Pillow
 """
 
-import os, sys, shutil, tempfile
+import os, sys, tempfile
 from pathlib import Path
 
-def create_background(width=1200, height=800, bg_color=(44, 44, 46)):
-    """Generate a simple dark background PNG for the DMG window.
-    width/height are @2x pixels (window is 600x400 points on Retina).
-    Draws a subtle horizontal arrow hint pointing from left (app) to right (Applications).
+
+def create_background(width=1200, height=780):
+    """Generate a standard macOS DMG background PNG.
+
+    White background, mimics the native macOS drag-to-Install experience:
+    left side = app icon area, right side = Applications area,
+    with a subtle right-pointing arrow between them.
+
+    width/height are @2x pixels (window is 600x390 points on Retina).
     """
     try:
         from PIL import Image, ImageDraw
@@ -26,37 +32,29 @@ def create_background(width=1200, height=800, bg_color=(44, 44, 46)):
         print("WARN: Pillow not installed, DMG will have no background image")
         return None
 
-    img = Image.new('RGB', (width, height), bg_color)
+    img = Image.new('RGB', (width, height), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
-    # Subtle arrow: a light translucent band from app position to Applications position
-    # App at ~x=130, Applications at ~x=410 (in points, = 260 and 820 in @2x)
+    # Arrow: subtle gray, centered vertically, spanning from app area to Applications area
+    # App icon at ~x=130pts (=260@2x center), Applications at ~x=460pts (=920@2x center)
     arrow_y = height // 2
-    arrow_left = 200
-    arrow_right = 1000
-    arrow_color = (70, 70, 75)
+    arrow_left = 340    # @2x: just right of app icon
+    arrow_right = 840   # @2x: just left of Applications icon
+    arrow_color = (180, 180, 180)
 
     # Horizontal band
-    draw.rectangle([arrow_left, arrow_y - 30, arrow_right, arrow_y + 30], fill=arrow_color)
-    # Arrow head (right-pointing triangle)
-    head_size = 40
-    draw.polygon([
-        (arrow_right, arrow_y - head_size - 10),
-        (arrow_right + head_size + 10, arrow_y),
-        (arrow_right, arrow_y + head_size + 10),
-    ], fill=arrow_color)
+    band_h = 8  # thin band
+    draw.rectangle([arrow_left, arrow_y - band_h // 2, arrow_right, arrow_y + band_h // 2],
+                   fill=arrow_color)
 
-    # Labels
-    try:
-        from PIL import ImageFont
-        font_size = 28  # @2x, so appears as 14pt
-        try:
-            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
-        except (OSError, IOError):
-            font = ImageFont.load_default()
-        draw.text((220, arrow_y + 80), "Drag to install", fill=(140, 140, 145), font=font)
-    except Exception:
-        pass  # Font not critical
+    # Arrow head (right-pointing triangle)
+    head_w = 36
+    head_h = 28
+    draw.polygon([
+        (arrow_right, arrow_y - head_h),
+        (arrow_right + head_w, arrow_y),
+        (arrow_right, arrow_y + head_h),
+    ], fill=arrow_color)
 
     return img
 
@@ -92,20 +90,27 @@ def build_dmg(app_path, output_path, volname="GoldenVestPet"):
         'files': [app_path],
         # Symlinks
         'symlinks': {'Applications': '/Applications'},
+        # v117: Use ULFO (lzfse) compression instead of default UDZO (zlib).
+        # ULFO is Apple's native compression format — decompresses 3-5x faster than zlib,
+        # so dragging .app to Applications is fast throughout (no late-stage slowdown).
+        # UDZO forces macOS to decompress blocks in real-time during copy; large files
+        # at the end of the image hit the slowest decompression paths.
+        # ULFO requires macOS 10.11+ (El Capitan), which covers all supported Macs.
+        'format': 'ULFO',
         # Icon view settings
         'view': 'icon-view',
         'icon_size': 128,
         'text_size': 16,
         'icon_locations': {
-            app_name: (140, 200),       # Left side
-            'Applications': (460, 200), # Right side
+            app_name: (140, 190),       # Left side
+            'Applications': (460, 190), # Right side
         },
         # Window settings (points, not pixels)
-        'window_rect': ((100, 100), (600, 400)),
+        'window_rect': ((100, 100), (600, 390)),
         # Hide toolbar and statusbar for clean look
         'toolbar_visible': False,
         'statusbar_visible': False,
-        # Background
+        # White background with arrow (standard macOS install experience)
         'background': bg_path if bg_path else None,
         # Volume icon (use app's .icns if available)
         'icon': None,
