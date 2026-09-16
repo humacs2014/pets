@@ -1,0 +1,162 @@
+97 INFO: PyInstaller: 6.11.1, contrib hooks: 2026.7
+97 INFO: Python: 3.11.9
+423 INFO: Platform: macOS-15.7.9-x86_64-i386-64bit
+423 INFO: Python environment: /Users/runner/build_env
+452 INFO: Removing temporary files and cleaning cache in /Users/runner/Library/Application Support/pyinstaller
+454 INFO: Module search paths (PYTHONPATH):
+['/Users/runner/work/pets/pets',
+ '/Library/Frameworks/Python.framework/Versions/3.11/lib/python311.zip',
+ '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11',
+ '/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/lib-dynload',
+ '/Users/runner/build_env/lib/python3.11/site-packages',
+ '/Users/runner/work/pets/pets']
+1417 INFO: Appending 'datas' from .spec
+1470 INFO: checking Analysis
+1470 INFO: Building Analysis because Analysis-00.toc is non existent
+1470 INFO: Running Analysis Analysis-00.toc
+1471 INFO: Target bytecode optimization level: 2
+1471 INFO: Initializing module dependency graph...
+1489 INFO: Initializing module graph hook caches...
+1502 INFO: Analyzing base_library.zip ...
+3802 INFO: Processing standard module hook 'hook-heapq.py' from '/Users/runner/build_env/lib/python3.11/site-packages/PyInstaller/hooks'
+4039 INFO: Processing standard module hook 'hook-encodings.py' from '/Users/runner/build_env/lib/python3.11/site-packages/PyInstaller/hooks'
+7603 INFO: Processing standard module hook 'hook-pickle.py' from '/Users/runner/build_env/lib/python3.11/site-packages/PyInstaller/hooks'
+13262 INFO: Caching module dependency graph...
+13537 INFO: Looking for Python shared library...
+13544 INFO: Using Python shared library: /Library/Frameworks/Python.framework/Versions/3.11/Python
+13544 INFO: Analyzing /Users/runner/work/pets/pets/pet_engine.py
+13902 INFO: Processing standard module hook 'hook-PyQt5.QtWidgets.py' from '/Users/runner/build_env/lib/python3.11/site-packages/PyInstaller/hooks'
+15227 INFO: Processing standard module hook 'hook-PyQt5.py' from '/Users/runner/build_env/lib/python3.11/site-packages/PyInstaller/hooks'
+15229 INFO: Processing standard module hook 'hook-PyQt5.QtCore.py' from '/Users/runner/build_env/lib/python3.11/site-packages/PyInstaller/hooks'
+15694 INFO: Processing standard module hook 'hook-PyQt5.QtGui.py' from '/Users/runner/build_env/lib/python3.11/site-packages/PyInstaller/hooks'
+17712 INFO: Processing standard module hook 'hook-xml.py' from '/Users/runner/build_env/lib/python3.11/site-packages/PyInstaller/hooks'
+17906 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from '/Users/runner/build_env/lib/python3.11/site-packages/PyInstaller/hooks'
+20937 INFO: Processing module hooks (post-graph stage)...
+20939 WARNING: Hidden import "sip" not found!
+21746 INFO: Performing binary vs. data reclassification (2533 entries)
+22082 INFO: Looking for ctypes DLLs
+22397 INFO: Analyzing run-time hooks ...
+22399 INFO: Including run-time hook 'pyi_rth_inspect.py' from '/Users/runner/build_env/lib/python3.11/site-packages/PyInstaller/hooks/rthooks'
+22402 INFO: Including run-time hook 'pyi_rth_pyqt5.py' from '/Users/runner/build_env/lib/python3.11/site-packages/PyInstaller/hooks/rthooks'
+22404 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from '/Users/runner/build_env/lib/python3.11/site-packages/PyInstaller/hooks/pre_find_module_path'
+22406 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from '/Users/runner/build_env/lib/python3.11/site-packages/PyInstaller/hooks'
+22409 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from '/Users/runner/build_env/lib/python3.11/site-packages/PyInstaller/hooks/rthooks'
+22569 INFO: Looking for dynamic libraries
+24066 INFO: Warnings written to /Users/runner/work/pets/pets/build/golden_vest_mac/warn-golden_vest_mac.txt
+24086 INFO: Graph cross-reference written to /Users/runner/work/pets/pets/build/golden_vest_mac/xref-golden_vest_mac.html
+24426 INFO: checking PYZ
+24426 INFO: Building PYZ because PYZ-00.toc is non existent
+24426 INFO: Building PYZ (ZlibArchive) /Users/runner/work/pets/pets/build/golden_vest_mac/PYZ-00.pyz
+26856 INFO: Building PYZ (ZlibArchive) /Users/runner/work/pets/pets/build/golden_vest_mac/PYZ-00.pyz completed successfully.
+26876 INFO: EXE target arch: x86_64
+26877 INFO: Code signing identity: None
+26881 INFO: checking PKG
+26882 INFO: Building PKG because PKG-00.toc is non existent
+26882 INFO: Building PKG (CArchive) GoldenVestPet.pkg
+26940 INFO: Building PKG (CArchive) GoldenVestPet.pkg completed successfully.
+26942 INFO: Bootloader /Users/runner/build_env/lib/python3.11/site-packages/PyInstaller/bootloader/Darwin-64bit/runw
+26942 INFO: checking EXE
+26942 INFO: Building EXE because EXE-00.toc is non existent
+26942 INFO: Building EXE from EXE-00.toc
+26943 INFO: Copying bootloader EXE to /Users/runner/work/pets/pets/build/golden_vest_mac/GoldenVestPet
+26944 INFO: Converting EXE to target arch (x86_64)
+28880 INFO: Removing signature(s) from EXE
+28918 INFO: Appending PKG archive to EXE
+28920 INFO: Fixing EXE headers for code signing
+28967 INFO: Rewriting the executable's macOS SDK version (13.1.0) to match the SDK version of the Python library (12.1.0) in order to avoid inconsistent behavior and potential UI issues in the frozen application.
+28969 INFO: Re-signing the EXE
+29012 INFO: Building EXE from EXE-00.toc completed successfully.
+29042 INFO: checking BUNDLE
+29042 INFO: Building BUNDLE because BUNDLE-00.toc is non existent
+29042 INFO: Building BUNDLE BUNDLE-00.toc
+29245 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/AppKit/_AppKit.cpython-311-darwin.so
+30416 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/AppKit/_inlines.cpython-311-darwin.so
+30570 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/CoreFoundation/_CoreFoundation.cpython-311-darwin.so
+30696 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/CoreFoundation/_inlines.cpython-311-darwin.so
+30813 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/Foundation/_Foundation.cpython-311-darwin.so
+30928 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/Foundation/_inlines.cpython-311-darwin.so
+31048 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/lib/QtCore.framework/Versions/5/QtCore
+32626 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/lib/QtDBus.framework/Versions/5/QtDBus
+32803 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/lib/QtGui.framework/Versions/5/QtGui
+33030 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/lib/QtNetwork.framework/Versions/5/QtNetwork
+33162 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/lib/QtPrintSupport.framework/Versions/5/QtPrintSupport
+33297 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/lib/QtQml.framework/Versions/5/QtQml
+33460 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/lib/QtQmlModels.framework/Versions/5/QtQmlModels
+33584 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/lib/QtQuick.framework/Versions/5/QtQuick
+33770 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/lib/QtSvg.framework/Versions/5/QtSvg
+33892 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/lib/QtWebSockets.framework/Versions/5/QtWebSockets
+34035 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/lib/QtWidgets.framework/Versions/5/QtWidgets
+34257 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/generic/libqtuiotouchplugin.dylib
+34360 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/iconengines/libqsvgicon.dylib
+34472 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/imageformats/libqgif.dylib
+34580 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/imageformats/libqicns.dylib
+34686 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/imageformats/libqico.dylib
+34788 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/imageformats/libqjpeg.dylib
+34921 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/imageformats/libqmacheif.dylib
+35049 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/imageformats/libqmacjp2.dylib
+35155 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/imageformats/libqsvg.dylib
+35260 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/imageformats/libqtga.dylib
+35365 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/imageformats/libqtiff.dylib
+35491 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/imageformats/libqwbmp.dylib
+35596 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/imageformats/libqwebp.dylib
+35715 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/platforms/libqcocoa.dylib
+35874 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/platforms/libqminimal.dylib
+36006 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/platforms/libqoffscreen.dylib
+36132 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/platforms/libqwebgl.dylib
+36273 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/platformthemes/libqxdgdesktopportal.dylib
+36680 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/Qt5/plugins/styles/libqmacstyle.dylib
+36806 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/QtCore.abi3.so
+36972 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/QtGui.abi3.so
+37141 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/QtWidgets.abi3.so
+37325 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/PyQt5/sip.cpython-311-darwin.so
+37532 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/Python.framework/Versions/3.11/Python
+37821 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_bisect.cpython-311-darwin.so
+37943 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_blake2.cpython-311-darwin.so
+38061 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_bz2.cpython-311-darwin.so
+38174 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_codecs_cn.cpython-311-darwin.so
+38299 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_codecs_hk.cpython-311-darwin.so
+38424 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_codecs_iso2022.cpython-311-darwin.so
+38542 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_codecs_jp.cpython-311-darwin.so
+38671 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_codecs_kr.cpython-311-darwin.so
+38807 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_codecs_tw.cpython-311-darwin.so
+38926 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_contextvars.cpython-311-darwin.so
+39045 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_ctypes.cpython-311-darwin.so
+39161 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_datetime.cpython-311-darwin.so
+39278 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_decimal.cpython-311-darwin.so
+39398 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_elementtree.cpython-311-darwin.so
+39511 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_hashlib.cpython-311-darwin.so
+39681 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_heapq.cpython-311-darwin.so
+39868 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_json.cpython-311-darwin.so
+40057 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_lzma.cpython-311-darwin.so
+40253 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_md5.cpython-311-darwin.so
+40522 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_multibytecodec.cpython-311-darwin.so
+40738 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_opcode.cpython-311-darwin.so
+40955 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_pickle.cpython-311-darwin.so
+41186 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_posixsubprocess.cpython-311-darwin.so
+41379 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_random.cpython-311-darwin.so
+41557 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_scproxy.cpython-311-darwin.so
+41760 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_sha1.cpython-311-darwin.so
+42038 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_sha256.cpython-311-darwin.so
+42410 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_sha3.cpython-311-darwin.so
+43107 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_sha512.cpython-311-darwin.so
+44081 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_socket.cpython-311-darwin.so
+44860 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_ssl.cpython-311-darwin.so
+45152 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_statistics.cpython-311-darwin.so
+45305 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_struct.cpython-311-darwin.so
+45454 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/_typing.cpython-311-darwin.so
+45861 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/array.cpython-311-darwin.so
+46109 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/binascii.cpython-311-darwin.so
+46340 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/fcntl.cpython-311-darwin.so
+46575 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/grp.cpython-311-darwin.so
+47022 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/math.cpython-311-darwin.so
+47279 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/pyexpat.cpython-311-darwin.so
+47532 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/resource.cpython-311-darwin.so
+47779 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/select.cpython-311-darwin.so
+48009 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/termios.cpython-311-darwin.so
+48170 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/unicodedata.cpython-311-darwin.so
+48323 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/lib-dynload/zlib.cpython-311-darwin.so
+48479 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/libcrypto.3.dylib
+48853 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/libssl.3.dylib
+49238 INFO: Executing: strip -S /Users/runner/Library/Application Support/pyinstaller/bincache10py31164bit/x86_64/adhoc/no-entitlements/objc/_objc.cpython-311-darwin.so
+51300 INFO: Signing the BUNDLE...
+53436 INFO: Building BUNDLE BUNDLE-00.toc completed successfully.
