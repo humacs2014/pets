@@ -290,9 +290,16 @@ class RoundedMenu(QWidget):
                 x = gp.x() + 2
                 y = gp.y() - _MENU_PAD
                 scr = QApplication.screenAt(gp) or QApplication.primaryScreen()
-                if x + sub._w > scr.availableGeometry().right():
+                ag = scr.availableGeometry()
+                # 水平：右侧空间不足→翻到左侧
+                if x + sub._w > ag.right():
                     x = self.mapToGlobal(r.topLeft()).x() - sub._w - 2
-                sub.move(*sub._clamp(x, y, gp))
+                # 垂直：子菜单底部超出可用区→从父条目底边向上展开
+                if y + sub._h > ag.bottom():
+                    y = self.mapToGlobal(r.bottomRight()).y() + _MENU_PAD - sub._h
+                if y < ag.top():
+                    y = ag.top()
+                sub.move(x, y)
                 sub.show()
         elif it is not None and self.sub_open is not None:
             # v68: 只有hover落到"另一个明确条目"才关子菜单。hover=-1（pad边条/
