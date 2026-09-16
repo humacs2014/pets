@@ -72,3 +72,58 @@
 - **根因**: 点击空白桌面时，Windows不会把事件发给任何Qt窗口（没有widget在该坐标），所以QApplication级别的eventFilter根本收不到该点击事件。`QApplication.mouseButtons()`在模态QEventLoop中也不会更新（因为没有Qt鼠标事件被处理）。
 - **修复**: 在`exec_menu`的QEventLoop中加100ms QTimer轮询，使用Win32 API `GetAsyncKeyState(1)`直接读取鼠标物理按键状态（绕过Qt事件系统），左键按下+光标在所有菜单rect外→`close_all()`
 - **预防铁律**: Qt模态循环中检测外部输入不能依赖Qt事件系统，必须用平台原生API（Windows=GetAsyncKeyState）做兜底
+
+### FIX-9: macOS置顶窗口抢焦点 (v113)
+- **根因**: `_ensure_visible`中使用`NSStatusWindowLevel`（状态栏级别太高），且未禁止窗口接受焦点。macOS会把焦点给高level窗口，点击其他应用时焦点被抢回。同时spec未打包pyobjc，运行时`import objc`失败→fallback `raise_()`更严重地抢焦点
+- **修复**: 
+  1. 改用`NSFloatingWindowLevel`（浮动层，不抢焦点但保持置顶）
+  2. `ns_win.setCanBecomeKey_(False)` + `setCanBecomeMainWindow_(False)` 禁止窗口成为key
+  3. spec加`objc, AppKit, Foundation`到hiddenimports + CI装`pyobjc-core pyobjc-framework-Cocoa`
+- **预防铁律**: macOS窗口level选择：NSFloatingWindowLevel（置顶不抢焦点）优于NSStatusWindowLevel（置顶抢焦点）。pyobjc必须打包否则原生API不可用
+
+### FIX-10: macOS DMG无经典双栏拖拽布局 (v113)
+- **根因**: 纯`hdiutil create -srcfolder`只生成文件夹视图，不设置`.DS_Store`元数据（图标位置、窗口大小、背景图等）。AppleScript操作Finder在CI headless环境必失败
+- **修复**: 使用`dmgbuild`（纯Python库，无需Finder/AppleScript）生成含`.DS_Store`元数据的美化DMG：背景图(Pillow内联生成1200×800 @2x深色+箭头)、图标位置(app左+Applications右)、窗口600×400点、128pt图标
+- **预防铁律**: CI中DMG美化只能用dmgbuild，禁AppleScript（无Finder）
+
+### FIX-11: macOS内存3GB+ (v113，根治方案已实施)
+- **根因(深入静态分析确认)**：引擎代码内存模型无问题（理论峰值RSS ~550MB: 帧数据~452MB + 框架~100MB）。3GB+来自PyInstaller打包膨胀：
+  1. **QtWebEngine泄漏(最致命)**：PyInstaller的hook-PyQt5.py通过QtWebChannel间接拉入QtWebEngine(Chromium ~300-500MB)，spec的excludes对hook不总生效
+  2. **CI全局site-packages**：pip装到全局，PyInstaller发现numpy/PIL等并自动包含
+  3. **excludes不够彻底**：缺少QtWebEngineCore/Widgets + Qt3D等
+- **修复**：
+  1. 自定义空hook覆盖PyInstaller默认hook（`hooks/hook-PyQt5.QtWebEngine*.py`），spec设`hookspath=['hooks']`
+  2. CI改用虚拟环境（`python -m venv build_env`），只装实际依赖
+  3. spec大幅扩充excludes（+QtWebEngine系列 +Qt3D +cmake/ninja等CI环境库）
+  4. CI构建后打印Top-20最大文件 + .app大小检查
+- **预防铁律**：macOS打包必须①用venv隔离 ②自定义hook阻止QtWebEngine ③验证.app<80MB
+
+### FIX-12: macOS窗口侵占其他应用 (v113)
+- **根因**: `_ensure_visible`每1秒调用`orderFrontRegardless()`+`setLevel_(NSFloatingWindowLevel)`，持续把宠物窗口推到所有应用前面，导致Chrome/其他窗口无法点击
+- **修复**: `orderFrontRegardless`和`setLevel_`只在窗口从隐藏/最小化恢复时调用，窗口已可见时不做任何macOS原生API调用
+- **预防铁律**: macOS浮动窗口不要在定时器中反复调用orderFrontRegardless，只在恢复时用
+
+### FIX-13: 集成显卡卡顿 (v113)
+- **根因**: 三层叠加瓶颈——①帧存QImage(CPU),drawImage每帧CPU→GPU传输30MB/s ②macOS透明窗口backing store每帧全窗口上传1.6MB@Retina ③粒子变化触发全窗口重绘(而非仅粒子区域)
+- **修复**: 三层优化——①QPixmap懒缓存:首次draw时fromImage转GPU,后续drawPixmap零拷贝blit ②脏矩形update(QRect):帧不变+仅粒子活跃时只标记粒子区域,backing store上传从1.6MB→~50KB ③paintEvent裁剪event.rect()跳过非脏区域绘制
+- **预防铁律**: 高频动画帧必须用QPixmap缓存+drawPixmap;透明窗口必须用脏矩形update而非全窗口;paintEvent必须clip event.rect()
+
+### FIX-14: macOS启动加载验证慢 (v113)
+- **根因**: ad-hoc签名(`codesign --sign -`)没有Hardened Runtime(`--options runtime`)，macOS把.app视为完全未签名，每次启动都执行Gatekeeper全文件quarantine扫描
+- **修复**: ①codesign加`--options runtime`启用Hardened Runtime + entitlements.plist，macOS缓存签名检查结果 ②Release说明明确xattr -cr一次性解除quarantine ③用户拖到/Applications而非从DMG直接运行
+- **预防铁律**: macOS分发必须①codesign带--options runtime ②提供entitlements ③告知用户xattr -cr
+
+### FIX-15: 动作头几帧循环卡顿 (v113)
+- **根因**: 增量加载首屏仅5帧(0.2s循环)，chunk追加帧时raw_idx % new_count跳帧（如5→25帧时从第4帧跳到第20帧）
+- **修复**: ①同步首屏从5帧增至25帧(~1s@24fps) ②frame_idx限制在已加载帧数内循环 ③chunk追加时重置anim_elapsed=frame_idx*frame_ms平滑过渡
+- **预防铁律**: 增量加载首屏至少1秒帧数；chunk追加必须同步重置anim_elapsed
+
+### FIX-16: loop=False动作播完不回idle (v113)
+- **根因**: happy/roll/stretch等loop=False状态播完121帧后frame_idx停在最后一帧，但state_duration(如roll=10.16秒)未到期，视觉卡死5秒
+- **修复**: loop=False状态播到最后一帧时立即回idle，不等duration到期
+- **预防铁律**: loop=False状态的duration只用于防止AI打断，播完帧应立即回idle
+
+### FIX-17: macOS切应用后宠物消失 (v113)
+- **根因**: Qt.Tool窗口在macOS上自动跟随应用前台状态——切到其他应用时Tool窗口隐藏
+- **修复**: 改用Qt.Window + Qt.WindowDoesNotAcceptFocus + LSUIElement=True(Info.plist)，宠物始终可见不出现在Dock/Cmd+Tab
+- **预防铁律**: macOS桌面宠物禁用Qt.Tool(会跟随应用隐藏)，用Qt.Window+LSUIElement替代

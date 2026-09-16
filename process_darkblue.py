@@ -25,7 +25,10 @@ VIDEOS_DIR = os.path.join(ROOT, 'videos')
 ASSETS_DIR = os.path.join(ROOT, 'assets')
 WORK_BASE = os.path.join(ROOT, '_darkblue_work')
 
-TARGET_FG = 186000
+TARGET_FG = 186000  # legacy default (not used when UNIFIED_FG is set)
+# v111: unified foreground target — all states normalized to same dog size
+# idle median_fg ≈ 220K; use this as the standard so all states look consistent
+UNIFIED_FG = 220000
 
 # Soft alpha thresholds
 SIGMOID_CORE = 0.7
@@ -37,17 +40,20 @@ BG_RGB = np.array([18.0, 37.0, 69.0])
 CREAM = np.array([200.0, 180.0, 150.0])
 
 # Erosion radius for darkblue border removal
-ERODE_RADIUS = 3
+# v110: 4px erosion at 1088x832 = 0.48% of frame height — removes more darkblue residue
+# that becomes visible black edges on macOS (Retina renders alpha 1-19 as ~0 RGB)
+ERODE_RADIUS = 4
 # Gaussian blur sigma for soft edge restoration after erosion
-EDGE_BLUR_SIGMA = 1.5
+EDGE_BLUR_SIGMA = 1.8
 
 
 def extract_frames(video_path, out_dir, num_frames=121):
+    """v110: Highest quality extraction — q:v 1 (best PNG), no scaling, native 1080P"""
     os.makedirs(out_dir, exist_ok=True)
     cmd = [
         'ffmpeg', '-y', '-i', video_path,
         '-vframes', str(num_frames),
-        '-q:v', '2',
+        '-q:v', '1',   # v110: highest PNG quality (was 2)
         os.path.join(out_dir, '%05d.png')
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -144,8 +150,10 @@ def fg_normalize_and_anchor(frames_dir, sigmoid_dir, out_dir, target_fg=TARGET_F
             sig_np = np.array(sig_img.resize((w, h), Image.BILINEAR)).astype(np.float64) / 65535.0
         
         # Compute soft alpha from BiRefNet sigmoid (NO modification to sigmoid or RGB)
+        # v111: sleep uses higher core threshold to stabilize flickering edges
+        core_thresh = 0.85 if state_name == 'sleep' else SIGMOID_CORE
         alpha = np.zeros((h, w), dtype=np.uint8)
-        core = sig_np > SIGMOID_CORE
+        core = sig_np > core_thresh
         alpha[core] = 255
         soft = (~core) & (sig_np > SIGMOID_FLOOR)
         alpha[soft] = np.clip(sig_np[soft] * 255, 1, 254).astype(np.uint8)
@@ -159,19 +167,29 @@ def fg_normalize_and_anchor(frames_dir, sigmoid_dir, out_dir, target_fg=TARGET_F
             chroma_mask = color_dist > 20
             biref_zero = alpha == 0
             alpha[biref_zero & chroma_mask] = 255
+        # eat特殊处理：色差法补充红色食盆+狗粮（BiRefNet把它们当背景抠掉了）
+        elif state_name == 'eat':
+            bg_ref = np.array([18.0, 37.0, 69.0])
+            # Keep BiRefNet core (sigmoid > 0.5) as-is
+            alpha = np.zeros((h, w), dtype=np.uint8)
+            alpha[sig_np > 0.5] = 255
+            # Add back pixels far from darkblue bg (food bowl + kibble = red/brown, far from blue)
+            color_dist = np.sqrt(((img.astype(np.float64) - bg_ref) ** 2).sum(axis=2))
+            chroma_mask = color_dist > 20
+            biref_zero = alpha == 0
+            alpha[biref_zero & chroma_mask] = 255
         
         fg = (alpha > 0).sum()
         fgs.append((fn, img, alpha, fg, sig_np))
     
     median_fg = int(np.median([fg for _, _, _, fg, _ in fgs]))
-    if state_name in ('pet',):
-        target_fg = median_fg
-    elif target_fg == TARGET_FG:
-        target_fg = median_fg
+    # v111: ALL states use UNIFIED_FG as target — ensures consistent dog size across all states
+    # Old v110 used target_fg=median_fg → fixed_scale=1.0 → sleep/run/roll 3× bigger than idle
+    target_fg = UNIFIED_FG
+    fixed_scale = np.sqrt(target_fg / median_fg)
     
     global_bottom_ys = []
     if state_name in ('pet', 'kiss', 'type'):
-        fixed_scale = np.sqrt(target_fg / median_fg)
         print(f'  Interaction state: fixed_scale={fixed_scale:.4f} (median_fg={median_fg}, target_fg={target_fg})')
     
     for fn, img, alpha, fg, sig_np_orig in fgs:
@@ -184,10 +202,9 @@ def fg_normalize_and_anchor(frames_dir, sigmoid_dir, out_dir, target_fg=TARGET_F
     for fn, img, alpha, fg, sig_np_orig in fgs:
         if fg < 1000:
             scale = 1.0
-        elif state_name in ('pet', 'kiss', 'type'):
-            scale = fixed_scale
         else:
-            scale = np.sqrt(target_fg / fg)
+            # v110: ALL states use fixed_scale — no per-frame size variation (eliminates jitter)
+            scale = fixed_scale
         
         h, w = img.shape[:2]
         new_w = max(1, int(w * scale))
@@ -223,10 +240,10 @@ def fg_normalize_and_anchor(frames_dir, sigmoid_dir, out_dir, target_fg=TARGET_F
                     dark_full = np.zeros(alpha_np.shape, dtype=bool)
                     dark_full[fg_mask] = is_darkblue
                     alpha_np[dark_full] = 0
-            alpha_np = erode_alpha(alpha_np, 2, protect_mask=orig_fg_mask)
+            alpha_np = erode_alpha(alpha_np, ERODE_RADIUS, protect_mask=orig_fg_mask)
             alpha_np = blur_alpha(alpha_np, EDGE_BLUR_SIGMA)
             alpha_np[alpha_np > 250] = 255
-            alpha_np[alpha_np < 3] = 0
+            alpha_np[alpha_np < 10] = 0
         else:
             # ============================================================
             # FUNDAMENTAL FIX: Remove darkblue border (two-pronged approach)
@@ -271,13 +288,15 @@ def fg_normalize_and_anchor(frames_dir, sigmoid_dir, out_dir, target_fg=TARGET_F
                     alpha_np[dark_full] = 0
             
             # Prong 2: Protected erode + blur for thin border cleanup
-            alpha_np = erode_alpha(alpha_np, 2, protect_mask=orig_fg_mask)
+            # v110: Use ERODE_RADIUS (4) instead of hardcoded 2 for better darkblue border removal
+            alpha_np = erode_alpha(alpha_np, ERODE_RADIUS, protect_mask=orig_fg_mask)
             alpha_np = blur_alpha(alpha_np, EDGE_BLUR_SIGMA)
             
             # Core restore (blur may soften alpha=255 pixels)
             alpha_np[alpha_np > 250] = 255
-            # Remove near-zero noise
-            alpha_np[alpha_np < 3] = 0
+            # v110: Remove low-alpha fringe that becomes visible black edges on macOS
+            # Qt premultiplied alpha: alpha 1-19 → RGB rendered as ≈0 (black fringe)
+            alpha_np[alpha_np < 10] = 0
         
         # Remove isolated tiny speckle components
         from scipy import ndimage
@@ -324,10 +343,10 @@ def fg_normalize_and_anchor(frames_dir, sigmoid_dir, out_dir, target_fg=TARGET_F
                         dk3_full = np.zeros(a2.shape, dtype=bool)
                         dk3_full[fg2] = dk3
                         a2[dk3_full] = 0
-                a2 = erode_alpha(a2, 2)
+                a2 = erode_alpha(a2, ERODE_RADIUS)
                 a2 = blur_alpha(a2, EDGE_BLUR_SIGMA)
                 a2[a2 > 250] = 255
-                a2[a2 < 3] = 0
+                a2[a2 < 10] = 0
                 arr2[:,:,3] = a2
                 rgba_img = Image.fromarray(arr2)
             mask_np2 = np.array(rgba_img)[:,:,3]
@@ -337,7 +356,18 @@ def fg_normalize_and_anchor(frames_dir, sigmoid_dir, out_dir, target_fg=TARGET_F
             if paste_y < 0:
                 paste_y = 0
             new_w, new_h = new_w2, new_h2
-        paste_x = (w0 - new_w) // 2
+        # v110: COM (center-of-mass) horizontal centering — prevents canvas shift on idle
+        # bbox centering causes horizontal jitter when frame width varies (breathing animation)
+        final_arr = np.array(rgba_img)
+        final_a = final_arr[:,:,3]
+        com_weights = final_a.astype(np.float64)
+        com_weights[com_weights < 128] = 0  # only count solid foreground
+        com_sum = com_weights.sum()
+        if com_sum > 0:
+            com_x = (com_weights * np.arange(final_a.shape[1])).sum() / com_sum
+            paste_x = int(w0 / 2 - com_x)
+        else:
+            paste_x = (w0 - new_w) // 2
         
         temp = Image.new('RGBA', (w0, h0), (0, 0, 0, 0))
         temp.paste(rgba_img, (paste_x, paste_y))
@@ -363,7 +393,11 @@ def to_webp(frames_dir, state_name, num_frames=None):
         out_path = os.path.join(ASSETS_DIR, f'{state_name}_{idx:03d}.webp')
         for attempt in range(5):
             try:
-                img.save(out_path, 'WEBP', lossless=True)
+                # Q80+α100: RGB lossy Q80, alpha lossless 100
+                # Prevents white dots and missing parts (alpha 100% intact)
+                # method=4: good balance of speed vs compression (method=6 too slow)
+                img.save(out_path, 'WEBP', quality=80, lossless=False,
+                         method=4, alpha_quality=100)
                 break
             except OSError:
                 _time.sleep(0.5 * (attempt + 1))

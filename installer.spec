@@ -8,7 +8,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        ('dist/金毛背心v1', 'GoldenVestPet'),
+        ('dist/GoldenVestPet', 'GoldenVestPet'),
     ],
     hiddenimports=[],
     hookspath=[],

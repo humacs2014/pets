@@ -53,3 +53,40 @@ MAC版本/
 # v116: Exclude large/obsolete directories
 electron_pet/
 identity_candidates/
+
+# v116: Intermediate/backup/test files never needed in repo
+# --- directories ---
+cutout_cache/
+dark_work_final/
+darkblue_refs*/
+assets_full_backup/
+assets_lick_backup/
+assets_new_walk/
+assets_after_*/
+frames_backup*/
+mats_ben2/
+mats_rembg/
+raw_frames/
+videos/
+_compare*/
+_fresh_walk/
+_darkblue_work/
+_electron_test/
+_premul_*/
+_q_compare/
+_v*_preview/
+_walk_dark*/
+_walk_v*/
+_tmp/
+_backup_*/
+# --- root-level test/compare files ---
+bark_*_compare.png
+bark_fix_*.png
+batch_sam2*.txt
+GoldenVestPet_Debug.spec
+assets_bbox.json
+*_compare*.html
+*_alpha*.html
+*_alpha*.webm
+*.webm
+*.mp4

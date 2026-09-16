@@ -47,7 +47,7 @@ def main():
     print(f"\n  ✓ Installed {count} files to: {target}")
 
     # Launch pet
-    pet = os.path.join(target, "金毛背心v1.exe")
+    pet = os.path.join(target, "GoldenVestPet.exe")
     if os.path.exists(pet):
         print("  Launching GoldenVestPet...")
         subprocess.Popen([pet], cwd=target, close_fds=True)
