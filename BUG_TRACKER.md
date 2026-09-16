@@ -60,3 +60,15 @@
 ### FIX-6: sleep边缘闪烁 (v111)
 - **根因**: BiRefNet对sleep帧的边缘判定不稳定，帧间soft/hard alpha切换导致轮廓闪烁（alpha diff sum最高4.3M）
 - **修复**: sleep使用更高的SIGMOID_CORE阈值(0.85)，让更多边缘像素变硬，减少soft区域帧间抖动
+
+### FIX-7: Desktop Fixed模式下walk动作失效 (v113)
+- **根因**: 菜单手动选walk时没有设置`roam_target`，而`_do_walk`在desktop模式+`roam_target is None`时立即减速切idle。同时AI决策（`_do_ai`）在desktop模式下完全排除walk，只做原地动作。
+- **修复**: 
+  1. 菜单选walk时，desktop模式下生成`roam_target`（向walk_dir方向走300-600像素距离）
+  2. AI决策中desktop模式也有12%概率触发walk（不再完全排除）
+- **预防铁律**: 任何模式切换需验证walk/run等移动状态是否受`roam_target`/目标位置逻辑影响，不能假设"有状态就能动"
+
+### FIX-8: 右键菜单外左键点击无法关闭 (v113)
+- **根因**: 点击空白桌面时，Windows不会把事件发给任何Qt窗口（没有widget在该坐标），所以QApplication级别的eventFilter根本收不到该点击事件。`QApplication.mouseButtons()`在模态QEventLoop中也不会更新（因为没有Qt鼠标事件被处理）。
+- **修复**: 在`exec_menu`的QEventLoop中加100ms QTimer轮询，使用Win32 API `GetAsyncKeyState(1)`直接读取鼠标物理按键状态（绕过Qt事件系统），左键按下+光标在所有菜单rect外→`close_all()`
+- **预防铁律**: Qt模态循环中检测外部输入不能依赖Qt事件系统，必须用平台原生API（Windows=GetAsyncKeyState）做兜底

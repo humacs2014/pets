@@ -34,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install PyQt5==5.15.10 pyinstaller==6.11.1
+          pip install PyQt5==5.15.10 pyinstaller==6.11.1 pyobjc-core==10.3 pyobjc-framework-Cocoa==10.3
 
       - name: Generate .icns app icon
         run: |
@@ -57,6 +57,14 @@ jobs:
           python -m PyInstaller --version
           python -m PyInstaller golden_vest_mac.spec --noconfirm --clean 2>&1 | tee pyinstaller.log
           file "dist/GoldenVestPet.app/Contents/MacOS/GoldenVestPet"
+          # v113: Check .app size — should be <80MB; if >150MB, heavy libs leaked in
+          du -sh "dist/GoldenVestPet.app"
+          find dist/GoldenVestPet.app -name '*.so' -o -name '*.dylib' | while read f; do
+            size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)
+            if [ "$size" -gt 5000000 ]; then
+              echo "WARN: Large binary ($((size/1024/1024))MB): $f"
+            fi
+          done
 
       - name: Push build log on failure
         if: failure()
@@ -124,14 +132,9 @@ jobs:
 
       - name: Create DMG with drag-to-Applications layout
         run: |
-          rm -rf dmg_stage
-          mkdir dmg_stage
-          # Place the .app bundle
-          cp -R "GoldenVestPet.app" dmg_stage/
-          # Symlink to /Applications — this is what makes Finder show the "drag to install" UI
-          ln -s /Applications dmg_stage/Applications
-          # Create DMG with custom volume name
-          hdiutil create -volname "GoldenVestPet" -srcfolder dmg_stage -ov -format UDZO "GoldenVestPet.dmg"
+          # v113: Use create_dmg.sh for proper Finder two-pane layout
+          # (simple hdiutil creates a plain folder view without the classic drag-to-install UI)
+          bash create_dmg.sh GoldenVestPet.app GoldenVestPet.dmg
 
       - name: Verify DMG
         run: |

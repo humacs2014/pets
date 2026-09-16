@@ -238,11 +238,37 @@ class RoundedMenu(QWidget):
         self.raise_()
         # App-level filter: unified mouse routing for main/submenu (fix for Qt.Popup dual-window capture conflict)
         QApplication.instance().installEventFilter(self)
+        # v113: timer to detect outside clicks that eventFilter misses
+        # (clicks on non-Qt desktop area don't generate Qt events)
+        self._outside_check = QTimer()
+        self._outside_check.timeout.connect(self._check_outside_click)
+        self._outside_check.start(100)
         self._loop = QEventLoop()
         self._loop.exec_()
         self._loop = None
+        self._outside_check.stop()
+        self._outside_check = None
         QApplication.instance().removeEventFilter(self)
         return self._result
+
+    def _check_outside_click(self):
+        """v113: Poll-based outside-click detection for non-Qt desktop areas.
+        eventFilter can't catch clicks that land on the Windows desktop (no Qt widget there).
+        Uses Win32 GetAsyncKeyState because QApplication.mouseButtons() may not update
+        inside a modal QEventLoop for clicks outside Qt windows."""
+        import ctypes
+        # VK_LBUTTON = 1; GetAsyncKeyState returns <0 if key is down
+        if ctypes.windll.user32.GetAsyncKeyState(1) >= 0:
+            return
+        gp = QCursor.pos()
+        # Check if click is inside main menu
+        if self.geometry().contains(gp):
+            return
+        # Check if click is inside submenu
+        if self.sub_open is not None and self.sub_open.geometry().contains(gp):
+            return
+        # Click is outside all menus → close
+        self.close_all()
 
     def eventFilter(self, obj, ev):
         t = ev.type()
@@ -1468,11 +1494,19 @@ class PetWindow(QWidget):
         elif sys.platform == 'darwin':
             try:
                 import objc
-                from AppKit import NSStatusWindowLevel
+                from AppKit import NSStatusWindowLevel, NSFloatingWindowLevel
                 ns_view = objc.objc_object(c_void_p=int(self.winId()))
                 ns_win = ns_view.window()
-                ns_win.setLevel_(NSStatusWindowLevel)
-                ns_win.orderFrontRegardless()  # v110: force front even when app is background
+                # v113: Use NSFloatingWindowLevel instead of NSStatusWindowLevel.
+                # NSStatusWindowLevel is too aggressive — it makes the window steal focus from
+                # other apps. NSFloatingWindowLevel keeps the pet on top of normal windows
+                # but doesn't steal keyboard/mouse focus.
+                ns_win.setLevel_(NSFloatingWindowLevel)
+                # v113: Prevent the window from ever becoming key (accepting focus).
+                # Without this, macOS still gives focus to the floating window on click.
+                ns_win.setCanBecomeKey_(False)
+                ns_win.setCanBecomeMainWindow_(False)
+                ns_win.orderFrontRegardless()  # force front even when app is background
             except Exception:
                 # Fallback: pure Qt approach
                 self.raise_()
@@ -2002,8 +2036,21 @@ class PetWindow(QWidget):
                 self.set_state('roll', duration=10.16)
             else:
                 self.set_state('idle')
-        else:  # desktop  --  drag-drop fixed: after drag, fixed at current position, does various actions in place, no auto-walking
-            if r < 0.30:
+        else:  # desktop  --  drag-drop fixed: after drag, fixed at current position, does various actions in place
+            if r < 0.12:
+                # v113: occasionally walk to a nearby spot
+                self.set_state('walk')
+                self.walk_dir = random.choice([-1, 1])
+                self._start_turn(self.walk_dir)
+                if self.turn_phase is None:
+                    self.facing = self.walk_dir
+                    self.flipped = self.facing < 0
+                sg2 = QApplication.primaryScreen().geometry()
+                walk_dist = random.uniform(150, 400)
+                target = self.x() + self.walk_dir * walk_dist
+                target = max(30, min(target, sg2.right() - self.width() - 30))
+                self.roam_target = target
+            elif r < 0.30:
                 self.set_state('idle')
             elif r < 0.45:
                 self.set_state('happy', duration=5.08)
@@ -2423,6 +2470,13 @@ class PetWindow(QWidget):
                 self.facing = self.walk_dir
                 self.flipped = self.facing < 0
             self.set_state('walk')
+            # v113: desktop mode needs roam_target for walk to actually move
+            if self.mode == 'desktop':
+                sg = QApplication.primaryScreen().geometry()
+                walk_dist = random.uniform(200, 500)
+                target = self.x() + self.walk_dir * walk_dist
+                target = max(30, min(target, sg.right() - self.width() - 30))
+                self.roam_target = target
             self.ai_timer = random.uniform(6, 12)  # walk 6-12 seconds
         elif action == 'mode_taskbar':
             self.mode = 'taskbar'
@@ -2630,6 +2684,18 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     _pet_window = PetWindow()
+    # v113: Memory usage debug print (helps diagnose macOS 3GB+ issue)
+    try:
+        import psutil
+        proc = psutil.Process()
+        mem_mb = proc.memory_info().rss / 1024 / 1024
+        print(f'[MEM] Startup RSS: {mem_mb:.0f} MB')
+    except ImportError:
+        if sys.platform == 'darwin':
+            # macOS fallback without psutil
+            import subprocess
+            rss = int(subprocess.check_output(['ps', '-o', 'rss=', '-p', str(os.getpid())]).strip())
+            print(f'[MEM] Startup RSS: {rss // 1024} MB')
     sys.exit(app.exec_())
 
 
