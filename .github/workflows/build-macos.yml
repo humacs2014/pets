@@ -33,13 +33,12 @@ jobs:
 
       - name: Create isolated venv and install dependencies
         run: |
-          python -m venv build_env
-          source build_env/bin/activate
-          pip install --upgrade pip
+          python3 -m venv $HOME/build_env
+          $HOME/build_env/bin/pip install --upgrade pip
           # v113: Install ONLY what pet_engine.py actually imports — no numpy/PIL/requests
-          pip install PyQt5==5.15.10 pyinstaller==6.11.1 pyobjc-core==10.3 pyobjc-framework-Cocoa==10.3
+          $HOME/build_env/bin/pip install PyQt5==5.15.10 pyinstaller==6.11.1 pyobjc-core==10.3 pyobjc-framework-Cocoa==10.3
           echo "=== Installed packages ==="
-          pip list
+          $HOME/build_env/bin/pip list
 
       - name: Generate .icns app icon
         run: |
@@ -57,11 +56,10 @@ jobs:
 
       - name: Build .app bundle
         run: |
-          source build_env/bin/activate
           set -o pipefail
           echo "Architecture: $(uname -m)"
-          python -m PyInstaller --version
-          python -m PyInstaller golden_vest_mac.spec --noconfirm --clean 2>&1 | tee pyinstaller.log
+          $HOME/build_env/bin/python -m PyInstaller --version
+          $HOME/build_env/bin/python -m PyInstaller golden_vest_mac.spec --noconfirm --clean 2>&1 | tee pyinstaller.log
           file "dist/GoldenVestPet.app/Contents/MacOS/GoldenVestPet"
           # v113: Check .app size — should be <80MB; if >150MB, heavy libs leaked in
           du -sh "dist/GoldenVestPet.app"
