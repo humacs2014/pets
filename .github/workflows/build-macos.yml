@@ -31,10 +31,15 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Create isolated venv and install dependencies
         run: |
-          python -m pip install --upgrade pip
+          python -m venv build_env
+          source build_env/bin/activate
+          pip install --upgrade pip
+          # v113: Install ONLY what pet_engine.py actually imports — no numpy/PIL/requests
           pip install PyQt5==5.15.10 pyinstaller==6.11.1 pyobjc-core==10.3 pyobjc-framework-Cocoa==10.3
+          echo "=== Installed packages ==="
+          pip list
 
       - name: Generate .icns app icon
         run: |
@@ -52,6 +57,7 @@ jobs:
 
       - name: Build .app bundle
         run: |
+          source build_env/bin/activate
           set -o pipefail
           echo "Architecture: $(uname -m)"
           python -m PyInstaller --version
@@ -59,6 +65,9 @@ jobs:
           file "dist/GoldenVestPet.app/Contents/MacOS/GoldenVestPet"
           # v113: Check .app size — should be <80MB; if >150MB, heavy libs leaked in
           du -sh "dist/GoldenVestPet.app"
+          echo "=== Top 20 largest files in .app ==="
+          find dist/GoldenVestPet.app -type f -exec ls -lS {} + 2>/dev/null | sort -rn -k5 | head -20
+          echo "=== Large binaries (>5MB) ==="
           find dist/GoldenVestPet.app -name '*.so' -o -name '*.dylib' | while read f; do
             size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)
             if [ "$size" -gt 5000000 ]; then

@@ -2684,18 +2684,6 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     _pet_window = PetWindow()
-    # v113: Memory usage debug print (helps diagnose macOS 3GB+ issue)
-    try:
-        import psutil
-        proc = psutil.Process()
-        mem_mb = proc.memory_info().rss / 1024 / 1024
-        print(f'[MEM] Startup RSS: {mem_mb:.0f} MB')
-    except ImportError:
-        if sys.platform == 'darwin':
-            # macOS fallback without psutil
-            import subprocess
-            rss = int(subprocess.check_output(['ps', '-o', 'rss=', '-p', str(os.getpid())]).strip())
-            print(f'[MEM] Startup RSS: {rss // 1024} MB')
     sys.exit(app.exec_())
 
 

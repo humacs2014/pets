@@ -8,11 +8,15 @@ a = Analysis(
     datas=[('assets', 'assets'), ('icon.png', '.')],
     hiddenimports=['PyQt5.QtWidgets', 'PyQt5.QtCore', 'PyQt5.QtGui',
                    'objc', 'AppKit', 'Foundation'],
-    hookspath=[],
+    hookspath=['hooks'],  # v113: custom hooks to block QtWebEngine collection
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # Unneeded PyQt5 submodules
+        # ═══ QtWebEngine — MUST be aggressively excluded (Chromium ~300-500MB) ═══
+        # PyInstaller's PyQt5 hook can pull these in via QtWebChannel etc.
+        'PyQt5.QtWebEngine', 'PyQt5.QtWebEngineCore',
+        'PyQt5.QtWebEngineWidgets', 'PyQt5.QtWebChannel',
+        # ═══ Unneeded PyQt5 submodules ═══
         'PyQt5.QtBluetooth', 'PyQt5.QtDBus', 'PyQt5.QtDesigner',
         'PyQt5.QtHelp', 'PyQt5.QtLocation', 'PyQt5.QtMultimedia',
         'PyQt5.QtMultimediaWidgets', 'PyQt5.QtNetwork', 'PyQt5.QtNfc',
@@ -22,7 +26,11 @@ a = Analysis(
         'PyQt5.QtSvg', 'PyQt5.QtTest', 'PyQt5.QtWebChannel',
         'PyQt5.QtWebEngine', 'PyQt5.QtWebSockets', 'PyQt5.QtXml',
         'PyQt5.QtXmlPatterns', 'PyQt5.QtChart',
-        # Unneeded stdlib (zipfile/zlib/json/urllib/logging/email are indirectly required by PyInstaller runtime hooks, do NOT exclude)
+        'PyQt5.Qt3DCore', 'PyQt5.Qt3DRender', 'PyQt5.Qt3DInput',
+        'PyQt5.Qt3DLogic', 'PyQt5.Qt3DExtras', 'PyQt5.Qt3DAnimation',
+        'PyQt5.QtDataVisualization', 'PyQt5.QtPurchasing',
+        'PyQt5.QtVirtualKeyboard',
+        # ═══ Unneeded stdlib ═══
         'asyncio', 'concurrent', 'csv', 'dbm', 'distutils',
         'ftplib', 'gettext', 'imaplib', 'lib2to3',
         'mailbox', 'multiprocessing', 'pydoc', 'pydoc_data',
@@ -30,7 +38,7 @@ a = Analysis(
         'tkinter', 'turtle', 'unittest',
         'xmlrpc', 'ensurepip', 'pip', 'setuptools',
         'pkg_resources', 'wheel', 'platformdirs',
-        # Heavy libraries not used by pet engine
+        # ═══ Heavy libraries not used by pet engine ═══
         'numpy', 'pandas', 'scipy', 'matplotlib',
         'PIL', 'Pillow', 'numpy.core', 'numpy.fft', 'numpy.linalg',
         'numpy.ma', 'numpy.matrixlib', 'numpy.polynomial', 'numpy.random',
@@ -38,7 +46,7 @@ a = Analysis(
         'sympy', 'IPython', 'jupyter', 'notebook',
         'tornado', 'zmq', 'jedi', 'parso',
         'cryptography', 'OpenSSL', 'cffi', 'pycparser',
-        # v113: Extra heavy libs commonly auto-included on macOS CI
+        # ═══ v113: Extra heavy libs commonly on CI global site-packages ═══
         'docutils', 'sphinx', 'babel', 'pytz', 'dateutil',
         'requests', 'urllib3', 'certifi', 'charset_normalizer',
         'idna', 'chardet', 'html5lib', 'webencodings',
@@ -48,6 +56,10 @@ a = Analysis(
         'zipp', 'filelock', 'virtualenv', 'distlib',
         'six', 'packaging', 'typing_extensions',
         'more_itertools', 'wcwidth', 'click', 'rich',
+        # ═══ v113: Additional CI env leakers ═══
+        'cmake', 'ninja', 'meson', 'scikit_build',
+        'pyproject_hooks', 'build', 'installer',
+        'trove_classifiers', 'pep517',
     ],
     noarchive=False,
     optimize=2,  # Bytecode optimization level 2
