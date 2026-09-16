@@ -1583,6 +1583,23 @@ class PetWindow(QWidget):
         self.timer.start(16)
         self.show()
 
+        # v117: Disable macOS system window shadow — WA_TranslucentBackground + FramelessWindowHint
+        # does NOT remove the NSWindow drop shadow. macOS draws a shadow around the window's
+        # opaque content outline (the sprite), producing a ghost silhouette behind the pet.
+        # This is the "transparent shadow" bug users see on macOS but not Windows.
+        if sys.platform == 'darwin':
+            try:
+                import objc
+                from AppKit import NSFloatingWindowLevel
+                ns_view = objc.objc_object(c_void_p=int(self.winId()))
+                ns_win = ns_view.window()
+                ns_win.setHasShadow_(False)
+                ns_win.setLevel_(NSFloatingWindowLevel)
+                ns_win.setCanBecomeKey_(False)
+                ns_win.setCanBecomeMainWindow_(False)
+            except Exception:
+                pass
+
         # v112: Background-load full idle frames (startup only loaded 5), then no mass preload
         QTimer.singleShot(50, self._start_lazy_preload)
 
@@ -1611,6 +1628,7 @@ class PetWindow(QWidget):
                     ns_win.setLevel_(NSFloatingWindowLevel)
                     ns_win.setCanBecomeKey_(False)
                     ns_win.setCanBecomeMainWindow_(False)
+                    ns_win.setHasShadow_(False)   # v117: re-disable after restore (macOS may re-enable)
                     ns_win.orderFrontRegardless()
                 except Exception:
                     self.raise_()
