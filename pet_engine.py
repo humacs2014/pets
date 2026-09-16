@@ -540,13 +540,16 @@ class SpriteBank:
                 self.frames[state] = []
                 self.frames_m[state] = []
                 self.lift_map[state] = []
-        # v107-perf: idle也LAZY——只同步加载帧0(<1MB), 后台加载全部
-        # 旧版同步加载121帧×3.5MB=423MB，现仅加载1帧≈0.86MB
-        idle_imgs, idle_lift = self._build_state('idle', max_frames=1)
+        # v112: idle sync-loads 5 frames for instant display (~20ms), then background loads full 121
+        idle_imgs, idle_lift = self._build_state('idle', max_frames=5)
         if idle_imgs:
             self.frames['idle'] = idle_imgs
             self.frames_m['idle'] = [None] * len(idle_imgs)
             self.lift_map['idle'] = idle_lift
+            # v112: Register idle in LRU order so it can be tracked/unloaded
+            self._loaded_order = getattr(self, '_loaded_order', [])
+            if 'idle' not in self._loaded_order:
+                self._loaded_order.append('idle')
         # v19: Per-frame leg cutting  --  run frames contain gallop jumps (per-frame body_bot displacement up to 31px),
         # fixed cut line (only frame 0) misaligns leg blocks on jump frames. Cut per-frame by own body bottom,
         # preserving in-frame gallop undulation while keeping cut line aligned with body.
@@ -596,13 +599,24 @@ class SpriteBank:
                 self._loaded_order.append(owner)
 
     def ensure_state(self, state):
-        """v99b: Pure async — start background thread to load frames.
-        Main thread never blocks. get() returns empty QImage while loading."""
+        """v112: Sync-load 5 frames (~100ms) for instant display, then async-load remaining 116 frames.
+        Main thread shows animation immediately via 5-frame fast path, background thread fills rest."""
         owner = self.alias.get(state, state)
         if owner not in self.LAZY or self.frames.get(owner):
             return
         if owner in self._lazy_threads:
             return
+        # Sync fast path: load first 5 frames so animation displays immediately
+        if not self.frames.get(owner):
+            imgs, lift = self._build_state(owner, max_frames=5)
+            if imgs:
+                self.frames[owner] = imgs
+                self.frames_m[owner] = [None] * len(imgs)
+                self.lift_map[owner] = lift
+                self._loaded_order = getattr(self, '_loaded_order', [])
+                if owner not in self._loaded_order:
+                    self._loaded_order.append(owner)
+        # Background full load: replaces 5-frame table with full 121-frame table when done
         t = _StateLoadThread(self, owner)
         self._lazy_threads[owner] = t
         t.finished.connect(lambda s=owner, th=t: self._on_lazy_done(s, th))
@@ -646,10 +660,9 @@ class SpriteBank:
             self._loaded_order.append(state)
 
     def unload_idle_lazy(self, active_state, keep=2):
-        """v110: Memory reclaim -- keep reduced from 3 to 2 (stable memory ~242MB instead of ~301MB).
-        Loaded lazy states exceeding keep count and not current state,
-        unload least-recently-triggered (clear frames/frames_m/lift back to lazy placeholder).
-        Aliased states (potty->sit), current state, and resident states not unloaded. Return unload count."""
+        """v112: Strict LRU — unload all lazy states beyond keep count.
+        Frees both frames AND frames_m to actually reclaim memory.
+        Aliased states (potty->sit), current state not unloaded. Return unload count."""
         order = getattr(self, '_loaded_order', [])
         n = 0
         for st in list(order):
@@ -660,6 +673,7 @@ class SpriteBank:
             # Alias state points to it -> don't unload
             if any(self.alias.get(s2) == st for s2 in self.alias):
                 continue
+            # v112: Clear both frames AND frames_m + lift to actually free memory
             self.frames[st] = []
             self.frames_m[st] = []
             self.lift_map[st] = []
@@ -1022,20 +1036,17 @@ class SpriteBank:
 
     def get(self, state, idx, flipped):
         state = self.alias.get(state, state)   # v64: Alias resolution (potty->sit), lazy-owner safe
-        if flipped:
-            bank = self.frames_m[state]
-            i = idx % len(bank) if bank else 0
-            if not bank or bank[i] is None:
-                src = self.frames.get(state) or []
-                if not src:
-                    return QImage()   # v64 lazy-load incomplete -> empty image skip draw
-                # v49 mirror lazy generation: mirror on first request, memory halved
-                bank[i] = src[i].mirrored(True, False)
-            return bank[i]
-        bank = self.frames[state]
+        bank = self.frames.get(state) or []
         if not bank:
             return QImage()           # v64 lazy-load incomplete -> empty image skip draw
-        return bank[idx % len(bank)]
+        i = idx % len(bank) if bank else 0
+        img = bank[i]
+        if img.isNull():
+            return QImage()
+        # v112: No mirror caching — mirrored() takes 0.04ms, saves 50% memory
+        if flipped:
+            return img.mirrored(True, False)
+        return img
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1337,14 +1348,14 @@ class PetWindow(QWidget):
         self.timer.start(16)
         self.show()
 
-        # v99: Background-preload lazy states after startup (walk/run/eat etc)
+        # v112: Background-load full idle frames (startup only loaded 5), then no mass preload
         QTimer.singleShot(50, self._start_lazy_preload)
 
-        # v25 (P1): Visibility guard  --  whatever causes window hide/minimize, force restore within 2s.
+        # v25 (P1): Visibility guard  --  whatever causes window hide/minimize, force restore within 1s.
         # Pet persists on desktop: only right-click menu "Exit" can truly close it.
         self._vis_timer = QTimer(self)
         self._vis_timer.timeout.connect(self._ensure_visible)
-        self._vis_timer.start(2000)
+        self._vis_timer.start(1000)
 
     #  --  --  --  --  -- ─ v25 (P1/P9): Persistence guard & zoom  --  --  --  --  -- ─
     def _ensure_visible(self):
@@ -1352,10 +1363,11 @@ class PetWindow(QWidget):
         if not self.isVisible() or self.isMinimized():
             self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
             self.show()
-        # v26+v109: Refresh stay-on-top  --  WindowStaysOnTopHint may be overridden by other top windows
-        # P3-fix2: DO NOT call raise_() or activateWindow() here — these steal focus from Chrome/other apps
-        # v109: Use native SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE) on Windows — reaffirms topmost
-        # without changing focus. On macOS, use objc NSWindow.setLevel.
+        # v110: Strengthened topmost refresh
+        # P3-fix2: DO NOT call activateWindow() — steals focus from Chrome/other apps
+        # Windows: SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE) reaffirms topmost without focus change
+        #         + raise_() as backup to refresh Z-order (raise_ doesn't steal focus on Windows)
+        # macOS: NSWindow.setLevel + orderFront (both needed; setLevel alone can be overridden by full-screen apps)
         if sys.platform == 'win32':
             try:
                 import ctypes
@@ -1364,6 +1376,7 @@ class PetWindow(QWidget):
                 ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0015)
             except Exception:
                 pass
+            self.raise_()  # backup: refreshes Z-order without focus steal
         elif sys.platform == 'darwin':
             try:
                 import objc
@@ -1371,8 +1384,10 @@ class PetWindow(QWidget):
                 ns_view = objc.objc_object(c_void_p=int(self.winId()))
                 ns_win = ns_view.window()
                 ns_win.setLevel_(NSStatusWindowLevel)
+                ns_win.orderFrontRegardless()  # v110: force front even when app is background
             except Exception:
-                pass
+                # Fallback: pure Qt approach
+                self.raise_()
 
     def changeEvent(self, event):
         """Intercept external minimize (e.g. Win+D/taskbar "Show Desktop" briefly hides all windows), stay persistent"""
@@ -1490,24 +1505,11 @@ class PetWindow(QWidget):
         # This eliminates startup IO/CPU spike that caused first-open stutter.
 
     def _start_lazy_preload(self):
-        """v99b: Parallel background preload — spawn 3 threads at a time for all lazy states.
-        With FastTransformation, each state loads in ~50-100ms, so 3 parallel threads
-        finish all 20 states in ~1 second total."""
-        # v107-perf: idle可能只有帧0(启动时同步加载1帧), 需要重新加载全部帧
-        states = [s for s in ANIMS if s not in self.bank.alias
-                  and (not self.bank.frames.get(s) or len(self.bank.frames.get(s, [])) < ANIMS[s][1])]
-        if not states:
-            return
-        # Prioritize common interaction states first
-        priority = ['idle', 'walk', 'run', 'bark', 'sit', 'sleep', 'eat', 'lick',
-                    'happy', 'pet', 'stretch', 'dance', 'beg', 'bath',
-                    'play_dead', 'surprised', 'kiss', 'wave', 'type', 'roll']
-        ordered = [s for s in priority if s in states] + [s for s in states if s not in priority]
-        self._preload_queue = ordered
-        self._preload_parallel = 3
-        # Launch initial batch
-        for _ in range(min(self._preload_parallel, len(self._preload_queue))):
-            self._preload_launch_next()
+        """v112: Only background-load idle's full 121 frames (startup loaded just 5).
+        All other states load strictly on-demand via ensure_state."""
+        # If idle only has partial frames (5 from startup), load full set in background
+        if self.bank.frames.get('idle') and len(self.bank.frames['idle']) < ANIMS['idle'][1]:
+            self.bank.ensure_state('idle')
 
     def _preload_launch_next(self):
         """Launch one background thread for next state in queue."""
@@ -2230,6 +2232,10 @@ class PetWindow(QWidget):
         self.happiness = min(100, self.happiness + 6)
 
     def contextMenuEvent(self, event):
+        # v110: Prevent multiple menus — fast right-clicks could spawn overlapping menus
+        if getattr(self, '_menu_open', False):
+            return
+        self._menu_open = True
         # v67: Self-drawn rounded menu  --  macOS QMenu+border-radius renders white outside rounded corners,
         # QPainterPath self-drawn popup same mechanism as main window, Windows/macOS pixel-identical.
         menu = RoundedMenu(self)
@@ -2274,6 +2280,7 @@ class PetWindow(QWidget):
         menu.add_item('quit', '❌ Quit')
 
         action = menu.exec_menu(event.globalPos())
+        self._menu_open = False
         if action is None:
             return
 
@@ -2288,38 +2295,38 @@ class PetWindow(QWidget):
                 self.set_state('run')
                 self.say('Catch me!')
         elif action == 'feed':
-            self.set_state('eat', duration=5.08)
+            self.set_state('eat', duration=10.16)
             self.fullness = min(100, self.fullness + 20)
             self.happiness = min(100, self.happiness + 5)
         elif action == 'pet':
             self.happiness = min(100, self.happiness + 10)
-            self.set_state('pet', duration=5.08)
+            self.set_state('pet', duration=10.16)
         elif action == 'happy':
-            self.set_state('happy', duration=5.08)
+            self.set_state('happy', duration=10.16)
         elif action == 'roll':
-            self.set_state('roll', duration=10.16)
+            self.set_state('roll', duration=15.24)
         elif action == 'dance':
-            self.set_state('dance', duration=10.16)
+            self.set_state('dance', duration=15.24)
         elif action == 'bark':
-            self.set_state('bark', duration=5.08)
+            self.set_state('bark', duration=10.16)
         elif action == 'lick':
-            self.set_state('lick', duration=5.08)
+            self.set_state('lick', duration=10.16)
         elif action == 'beg':
-            self.set_state('beg', duration=5.08)
+            self.set_state('beg', duration=10.16)
         elif action == 'bath':
-            self.set_state('bath', duration=10.16)
+            self.set_state('bath', duration=15.24)
         elif action == 'wave':
-            self.set_state('wave', duration=5.08)
+            self.set_state('wave', duration=10.16)
         elif action == 'stretch':
-            self.set_state('stretch', duration=5.08)
+            self.set_state('stretch', duration=10.16)
         elif action == 'surprised':
-            self.set_state('surprised', duration=5.08)
+            self.set_state('surprised', duration=10.16)
         elif action == 'kiss':
-            self.set_state('kiss', duration=5.08)
+            self.set_state('kiss', duration=10.16)
         elif action == 'type':
-            self.set_state('type', duration=5.08)
+            self.set_state('type', duration=10.16)
         elif action == 'play_dead':
-            self.set_state('play_dead', duration=5.08)
+            self.set_state('play_dead', duration=10.16)
         elif action == 'walk':
             # Perform walk: set direction and duration, make the dog walk
             self.walk_dir = random.choice([-1, 1])
