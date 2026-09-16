@@ -90,3 +90,17 @@ assets_bbox.json
 *_alpha*.webm
 *.webm
 *.mp4
+# --- root-level intermediate scripts ---
+gen_darkblue_refs.py
+gen_idle_video.py
+gen_side_cands.py
+gen_videos_1080p.py
+regen_darkblue_1080p.py
+rescale_darkblue_refs.py
+reencode_q80.py
+pipeline_1080p.py
+build_with_retry.py
+test_fix18*.py
+test_q_comparison.py
+pet_windows_dir.spec
+preload.mjs
