@@ -177,6 +177,7 @@ class RoundedMenu(QWidget):
         self._w = self._h = 10
         self._font = QFont(_UI_FONT)
         self._font.setPixelSize(13)
+        self._flipped_up = False   # 主菜单是否向上翻转
 
     # ---- 构建 ----
     def add_item(self, key, text):
@@ -220,7 +221,8 @@ class RoundedMenu(QWidget):
             x = ag.right() - self._w
         x = max(ag.left(), x)
         # 垂直：菜单底部超出可用区→向上翻转
-        if y + self._h > ag.bottom():
+        self._flipped_up = (y + self._h > ag.bottom())
+        if self._flipped_up:
             y = pos.y() - self._h
         # 翻转后仍溢出顶部→夹紧到顶
         if y < ag.top():
@@ -288,15 +290,21 @@ class RoundedMenu(QWidget):
                 r = self._rects[self.hover_idx]
                 gp = self.mapToGlobal(r.topRight())
                 x = gp.x() + 2
-                y = gp.y() - _MENU_PAD
                 scr = QApplication.screenAt(gp) or QApplication.primaryScreen()
                 ag = scr.availableGeometry()
                 # 水平：右侧空间不足→翻到左侧
                 if x + sub._w > ag.right():
                     x = self.mapToGlobal(r.topLeft()).x() - sub._w - 2
-                # 垂直：子菜单底部超出可用区→从父条目底边向上展开
-                if y + sub._h > ag.bottom():
+                # 垂直：主菜单已向上翻转 或 子菜单底部超出可用区 → 子菜单向上展开
+                if self._flipped_up:
+                    # 从父条目底边对齐，子菜单向上展开
                     y = self.mapToGlobal(r.bottomRight()).y() + _MENU_PAD - sub._h
+                else:
+                    # 默认：从父条目顶边向下展开
+                    y = gp.y() - _MENU_PAD
+                    # 向下展开时若底部超出→也向上翻
+                    if y + sub._h > ag.bottom():
+                        y = self.mapToGlobal(r.bottomRight()).y() + _MENU_PAD - sub._h
                 if y < ag.top():
                     y = ag.top()
                 sub.move(x, y)
