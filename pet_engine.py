@@ -1473,43 +1473,38 @@ class PetWindow(QWidget):
 
     #  --  --  --  --  -- ─ v25 (P1/P9): Persistence guard & zoom  --  --  --  --  -- ─
     def _ensure_visible(self):
-        """Force restore when window invisible/minimized, refresh stay-on-top to prevent being covered by other apps"""
+        """Force restore when window invisible/minimized. On macOS, only calls
+        orderFrontRegardless when restoring from hidden — NOT every second.
+        Calling orderFrontRegardless every 1s forces pet above ALL other apps,
+        making them unclickable (FIX-12)."""
         if not self.isVisible() or self.isMinimized():
             self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
             self.show()
-        # v110: Strengthened topmost refresh
-        # P3-fix2: DO NOT call activateWindow() — steals focus from Chrome/other apps
-        # Windows: SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE) reaffirms topmost without focus change
-        #         + raise_() as backup to refresh Z-order (raise_ doesn't steal focus on Windows)
-        # macOS: NSWindow.setLevel + orderFront (both needed; setLevel alone can be overridden by full-screen apps)
+            # v113-fix: Only set level + orderFront when actually restoring from hidden/minimized
+            if sys.platform == 'darwin':
+                try:
+                    import objc
+                    from AppKit import NSFloatingWindowLevel
+                    ns_view = objc.objc_object(c_void_p=int(self.winId()))
+                    ns_win = ns_view.window()
+                    ns_win.setLevel_(NSFloatingWindowLevel)
+                    ns_win.setCanBecomeKey_(False)
+                    ns_win.setCanBecomeMainWindow_(False)
+                    ns_win.orderFrontRegardless()
+                except Exception:
+                    self.raise_()
+            return
+        # v113-fix: Window is visible and not minimized — DO NOT call orderFrontRegardless.
+        # That call every 1s was forcing the pet window in front of ALL other apps,
+        # making them unclickable. On macOS, NSFloatingWindowLevel already keeps the pet
+        # above normal windows; we only need a lightweight Z-order hint on Windows.
         if sys.platform == 'win32':
             try:
                 import ctypes
                 hwnd = int(self.winId())
-                # HWND_TOPMOST = -1, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE = 0x0003|0x0010|0x0002
                 ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0015)
             except Exception:
                 pass
-            self.raise_()  # backup: refreshes Z-order without focus steal
-        elif sys.platform == 'darwin':
-            try:
-                import objc
-                from AppKit import NSStatusWindowLevel, NSFloatingWindowLevel
-                ns_view = objc.objc_object(c_void_p=int(self.winId()))
-                ns_win = ns_view.window()
-                # v113: Use NSFloatingWindowLevel instead of NSStatusWindowLevel.
-                # NSStatusWindowLevel is too aggressive — it makes the window steal focus from
-                # other apps. NSFloatingWindowLevel keeps the pet on top of normal windows
-                # but doesn't steal keyboard/mouse focus.
-                ns_win.setLevel_(NSFloatingWindowLevel)
-                # v113: Prevent the window from ever becoming key (accepting focus).
-                # Without this, macOS still gives focus to the floating window on click.
-                ns_win.setCanBecomeKey_(False)
-                ns_win.setCanBecomeMainWindow_(False)
-                ns_win.orderFrontRegardless()  # force front even when app is background
-            except Exception:
-                # Fallback: pure Qt approach
-                self.raise_()
 
     def changeEvent(self, event):
         """Intercept external minimize (e.g. Win+D/taskbar "Show Desktop" briefly hides all windows), stay persistent"""
