@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# macOS打包spec — 输出 .app bundle（PyInstaller在macOS上用BUNDLE而非onefile EXE）
+# macOS build spec — outputs .app bundle (PyInstaller uses BUNDLE on macOS, not onefile EXE)
 
 a = Analysis(
     ['golden_pet.py'],
@@ -20,12 +20,12 @@ exe = EXE(
     pyz,
     a.scripts,
     [],
-    exclude_binaries=True,        # BUNDLE模式：binaries放进.app而非单文件
-    name='金毛犬桌面宠物',
+    exclude_binaries=True,        # BUNDLE mode: binaries go into .app, not single file
+    name='GoldenPet',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,                    # macOS上UPX容易破坏Mach-O签名结构，关闭
+    upx=False,                    # UPX can corrupt Mach-O signing on macOS, keep off
     console=False,
     target_arch=None,
     codesign_identity=None,
@@ -36,17 +36,18 @@ coll = BUNDLE(
     exe,
     a.binaries,
     a.datas,
-    name='金毛犬桌面宠物.app',
+    name='GoldenPet.app',
     icon='app.icns',
     bundle_identifier='com.humac.goldendesktoppet',
     info_plist={
-        'CFBundleDisplayName': '金毛犬桌面宠物',
+        'CFBundleDisplayName': 'GoldenPet',
         'CFBundleName': 'GoldenDesktopPet',
         'CFBundleShortVersionString': '1.0',
         'NSHighResolutionCapable': True,
         'LSApplicationCategoryType': 'public.app-category.entertainment',
         'LSMinimumSystemVersion': '11.0',
-        # 桌面宠物需要悬浮在所有窗口之上
+        # Desktop pet needs to float above all windows
         'NSRequiresAquaSystemAppearance': False,
+        'LSUIElement': True,        # No Dock icon, no Cmd+Tab entry — floating desktop companion
     },
 )

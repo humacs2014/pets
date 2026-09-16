@@ -32,13 +32,13 @@ from PyQt5.QtGui import (
     QImage, QImageReader, QCursor, QRadialGradient, QLinearGradient
 )
 
-# 跨平台中文字体：macOS无微软雅黑，回退到苹方
-_UI_FONT = 'PingFang SC' if sys.platform == 'darwin' else 'Microsoft YaHei'
+# Cross-platform English font: macOS uses system, Windows uses Segoe UI
+_UI_FONT = 'Segoe UI' if sys.platform == 'win32' else '.AppleSystemUIFont'
 
 # ═══ v66 参数化（换宠物改这里）═══
-PET_NAME = '金毛犬桌面宠物'            # 中文显示名（窗口前缀/单例提示）
-PET_NAME_ASCII = 'GoldenDesktopPet'   # 英文名（窗口标题/单例mutex）
-BARK_TEXT, EAT_TEXT = '汪!', '好吃!'   # 气泡文字
+PET_NAME = 'Golden Retriever Desktop Pet'  # Display name (window prefix / singleton prompt)
+PET_NAME_ASCII = 'GoldenDesktopPet'   # Internal name (window title / singleton mutex)
+BARK_TEXT, EAT_TEXT = 'Woof!', 'Yummy!'  # Bubble text
 
 
 def asset_path():
@@ -1494,7 +1494,7 @@ class PetWindow(QWidget):
             self.set_state('potty_run')
             edge = random.choice([30, sg.right() - self.width() - 30])
             self.roam_target = edge
-            self.say('内急...')
+            self.say('Gotta go...')
             return
 
         if st == 'potty_run':
@@ -1518,19 +1518,19 @@ class PetWindow(QWidget):
             if st_time > 3.0:
                 self.set_state('idle')
                 self.particles.emit(ParticleSystem.SPARKLE, CANVAS / 2, 100, 5)
-                self.say('舒服~')
+                self.say('Much better~')
             return
 
         # ── 睡觉 ──
         if st == 'sleep':
             if (st_time > 10 and self.energy >= 95) or st_time > 40:
                 self.set_state('idle')
-                self.say('睡醒了!')
+                self.say('Awake!')
             return
 
         if self.energy < 15 and st == 'idle' and random.random() < dt * 0.5:
             self.set_state('sleep')
-            self.say('困了...')
+            self.say('Sleepy...')
             return
 
         # ── 自动行为计时器 ──
@@ -1843,7 +1843,7 @@ class PetWindow(QWidget):
                 sg = QApplication.primaryScreen().geometry()
                 self.floor_y = sg.bottom() - self.height() - 45
                 self.set_state('idle')
-                self.say('抓到我了!')
+                self.say('Got me!')
             else:
                 self.set_state('surprised')
 
@@ -1889,43 +1889,56 @@ class PetWindow(QWidget):
         self.happiness = min(100, self.happiness + 6)
 
     def contextMenuEvent(self, event):
-        # v67: 自绘圆角菜单——macOS 下 QMenu+border-radius 圆角外渲染白底，
-        # QPainterPath 自绘 popup 与主窗口同机制，Windows/macOS 像素级一致。
+        # v114-fix: Close any previous menu before opening a new one.
+        # Without this, rapid right-clicks create multiple menus that don't close.
+        # exec_menu runs a nested QEventLoop, so Qt still processes events including
+        # new right-clicks — which would spawn a second menu on top of the first.
+        if hasattr(self, '_active_menu') and self._active_menu is not None:
+            try:
+                self._active_menu.close_all()
+            except RuntimeError:
+                pass  # already deleted
+            self._active_menu = None
+            return  # Don't open a new menu — treat re-click as "dismiss"
+
+        # v67: Custom rounded menu — macOS QMenu + border-radius renders white corners.
         menu = RoundedMenu(self)
+        self._active_menu = menu
 
         tease_key = 'tease'
-        menu.add_item(tease_key, '🐾 退出逗弄' if self.mode == 'tease' else '🐾 逗逗我')
+        menu.add_item(tease_key, '🐾 Exit Tease' if self.mode == 'tease' else '🐾 Tease Me')
         menu.add_sep()
-        menu.add_item('feed', '🍖 喂食')
-        menu.add_item('pet', '🤚 摸摸头')
+        menu.add_item('feed', '🍖 Feed')
+        menu.add_item('pet', '🤚 Pet')
         menu.add_sep()
         trick_menu = RoundedMenu(self)
-        trick_menu.add_item('happy', '开心跳跃')
-        trick_menu.add_item('roll', '打滚')
-        trick_menu.add_item('dance', '跳舞')
-        trick_menu.add_item('bark', '叫一声')
-        trick_menu.add_item('lick', '舔毛')
-        trick_menu.add_item('beg', '作揖')
-        trick_menu.add_item('bath', '洗澡')
-        menu.add_sub('🎪 表演', trick_menu)
+        trick_menu.add_item('happy', 'Jump')
+        trick_menu.add_item('roll', 'Roll Over')
+        trick_menu.add_item('dance', 'Dance')
+        trick_menu.add_item('bark', 'Bark')
+        trick_menu.add_item('lick', 'Lick')
+        trick_menu.add_item('beg', 'Beg')
+        trick_menu.add_item('bath', 'Bath')
+        menu.add_sub('🎪 Tricks', trick_menu)
         menu.add_sep()
         size_menu = RoundedMenu(self)
-        size_menu.add_item('zoom_up', '➕ 放大')
-        size_menu.add_item('zoom_down', '➖ 缩小')
-        size_menu.add_item('zoom_reset', '↩ 重置')
-        menu.add_sub('🔍 大小', size_menu)
+        size_menu.add_item('zoom_up', '➕ Larger')
+        size_menu.add_item('zoom_down', '➖ Smaller')
+        size_menu.add_item('zoom_reset', '↩ Reset')
+        menu.add_sub('🔍 Size', size_menu)
         menu.add_sep()
         mode_menu = RoundedMenu(self)
-        mode_menu.add_item('mode_taskbar', '任务栏漫步')
-        mode_menu.add_item('mode_desktop', '桌面漫游')
-        menu.add_sub('📍 模式', mode_menu)
+        mode_menu.add_item('mode_taskbar', 'Taskbar Walk')
+        mode_menu.add_item('mode_desktop', 'Desktop Roam')
+        menu.add_sub('📍 Mode', mode_menu)
         menu.add_sep()
-        menu.add_item('sleep', '💤 去睡觉')
-        menu.add_item('stats', '📊 查看状态')
+        menu.add_item('sleep', '💤 Sleep')
+        menu.add_item('stats', '📊 Stats')
         menu.add_sep()
-        menu.add_item('quit', '❌ 退出')
+        menu.add_item('quit', '❌ Quit')
 
         action = menu.exec_menu(event.globalPos())
+        self._active_menu = None  # v114-fix: clear after menu closes
         if action is None:
             return
 
@@ -1938,7 +1951,7 @@ class PetWindow(QWidget):
             else:
                 self.mode = 'tease'
                 self.set_state('run')
-                self.say('来抓我呀!')
+                self.say('Catch me!')
         elif action == 'feed':
             self.set_state('eat', duration=6.56)
             self.fullness = min(100, self.fullness + 20)
@@ -1970,21 +1983,21 @@ class PetWindow(QWidget):
         elif action == 'mode_desktop':
             self.mode = 'desktop'
             self.set_state('idle')
-            self.say('自由啦!')
+            self.say('Free!')
         elif action == 'zoom_up':
             self.set_zoom(self.zoom + ZOOM_STEP)
-            self.say(f'大小 {self.zoom:.2f}x')
+            self.say(f'Size {self.zoom:.2f}x')
         elif action == 'zoom_down':
             self.set_zoom(self.zoom - ZOOM_STEP)
-            self.say(f'大小 {self.zoom:.2f}x')
+            self.say(f'Size {self.zoom:.2f}x')
         elif action == 'zoom_reset':
             self.set_zoom(ZOOM_DEFAULT)
-            self.say('恢复默认大小')
+            self.say('Reset size')
         elif action == 'sleep':
             self.set_state('sleep')
         elif action == 'stats':
-            self.say(f'饱食{int(self.fullness)} 开心{int(self.happiness)} '
-                      f'精力{int(self.energy)}')
+            self.say(f'Fullness {int(self.fullness)} Happy {int(self.happiness)} '
+                      f'Energy {int(self.energy)}')
             self.particles.emit(ParticleSystem.SPARKLE, CANVAS / 2, 70, 4)
         elif action == 'quit':
             QApplication.quit()
@@ -2046,7 +2059,7 @@ def _find_existing_window():
         if n:
             buf = ctypes.create_unicode_buffer(n + 1)
             user32.GetWindowTextW(hwnd, buf, n + 1)
-            if buf.value.startswith('金毛犬桌面宠物'):
+            if buf.value.startswith('Golden Retriever') or buf.value.startswith('金毛犬桌面宠物'):
                 found.append(hwnd)
         return True
 
