@@ -95,5 +95,6 @@ coll = BUNDLE(
         'LSApplicationCategoryType': 'public.app-category.entertainment',
         'LSMinimumSystemVersion': '11.0',
         'NSRequiresAquaSystemAppearance': False,
+        'LSUIElement': True,        # v113: No Dock icon, no Cmd+Tab entry — pet is a floating desktop companion
     },
 )

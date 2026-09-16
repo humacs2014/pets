@@ -550,7 +550,7 @@ class SpriteBank:
     # v22g: roll moved out of LAZY -> resident set. roll is menu interaction action, lazy-load caused only 1 frame loaded
     #      -> during background thread build, bank replaced by fullbank/zoom swap -> full frame table lost
     #      -> animation stuck on 1 frame = user reports "ends in 2 seconds". Resident set preloads at startup, no issue.
-    # v67: Only idle is mandatory startup state, all others LAZY (background async load, first trigger sync-loads 5 frames + background full)
+    # v67: Only idle is mandatory startup state, all others LAZY (background async load, first trigger sync-loads 25 frames + background full)
     # v67-resident: High-frequency interaction states moved to resident set to eliminate first-trigger freeze.
     #   These states (walk/run/bark/sit/sleep/eat/lick) are the most common AI auto-actions.
     #   Low-frequency performance states (dance/beg/bath/happy/stretch/pet/play_dead/surprised/kiss/wave/type/roll) stay lazy.
@@ -630,8 +630,8 @@ class SpriteBank:
                 self.frames[state] = []
                 self.frames_m[state] = []
                 self.lift_map[state] = []
-        # v112: idle sync-loads 5 frames for instant display (~20ms), then background loads full 121
-        idle_imgs, idle_lift = self._build_state('idle', max_frames=5)
+        # v113: idle sync-loads 25 frames for instant display (~80ms), then background loads full 121
+        idle_imgs, idle_lift = self._build_state('idle', max_frames=25)
         if idle_imgs:
             self.frames['idle'] = idle_imgs
             self.frames_m['idle'] = [None] * len(idle_imgs)
@@ -696,9 +696,11 @@ class SpriteBank:
             return
         if owner in self._lazy_threads:
             return
-        # Sync fast path: load first 5 frames so animation displays immediately
+        # Sync fast path: load first 25 frames so animation displays immediately (~1s @24fps)
+        # v113-fix: Old 5 frames caused visible loop stutter on slow machines (5 frames = 0.2s loop,
+        # each chunk arrival caused frame_idx jump). 25 frames = 1 full second, smooth even on HDD.
         if not self.frames.get(owner):
-            imgs, lift = self._build_state(owner, max_frames=5)
+            imgs, lift = self._build_state(owner, max_frames=25)
             if imgs:
                 self.frames[owner] = imgs
                 self.frames_m[owner] = [None] * len(imgs)
@@ -723,12 +725,17 @@ class SpriteBank:
             bank = bank._replaced_by
         existing = bank.frames.get(state, [])
         existing_lift = bank.lift_map.get(state, [])
+        old_count = len(existing)
         bank.frames[state] = existing + new_imgs
         bank.frames_m[state] = [None] * len(bank.frames[state])
         bank.lift_map[state] = existing_lift + new_lift
         # v113: Invalidate pixmap cache — new frames mean old pixmaps are stale
         bank.pixmaps.pop(state, None)
         bank.pixmaps_m.pop(state, None)
+        # v113-fix: Notify pet widget so it can adjust anim_elapsed to avoid frame jumps.
+        # Without this, raw_idx % new_count jumps to a different frame than current.
+        if hasattr(bank, 'on_chunk_appended') and bank.on_chunk_appended:
+            bank.on_chunk_appended(state, old_count, len(bank.frames[state]))
 
     def _on_lazy_done(self, state, t):
         self._lazy_threads.pop(state, None)
@@ -1380,9 +1387,13 @@ class PetWindow(QWidget):
         super().__init__()
         self.setWindowTitle(WINDOW_TITLE)
         # P3 fix: macOS uses Qt.Tool (no focus steal, no Cmd-Tab entry, fixes Chrome keyboard bug)
-        # Windows uses Qt.Window + WS_EX_NOACTIVATE (Tool windows get hidden on app switch)
+        # macOS: Qt.Tool windows auto-hide when app loses focus (user switches to other app).
+        # Use Qt.Window instead so pet stays visible at all times.
+        # NSFloatingWindowLevel + setCanBecomeKey_(False) keeps it floating + non-interactive.
+        # LSUIElement in Info.plist prevents it from appearing in Dock/Cmd+Tab.
         if sys.platform == 'darwin':
-            self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+                                | Qt.WindowDoesNotAcceptFocus)
         else:
             self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Window)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -1405,6 +1416,7 @@ class PetWindow(QWidget):
         self.bank.fast_boot = True
         self.bank.load()
         self.bank.on_state_reloaded = self._on_state_reloaded
+        self.bank.on_chunk_appended = self._on_chunk_appended
         # v99: No _fullbank_thread — all states are LAZY, loaded on-demand only
         self._fullbank_thread = None
         self.particles = ParticleSystem()
@@ -1600,6 +1612,7 @@ class PetWindow(QWidget):
             old._replaced_by = new   # v94-fix: In-flight lazy load write-back routes to latest bank
             self.bank = new
             self.bank.on_state_reloaded = self._on_state_reloaded
+            self.bank.on_chunk_appended = self._on_chunk_appended
             self.update()
         t.deleteLater()
 
@@ -1634,6 +1647,7 @@ class PetWindow(QWidget):
                 new.lift_map[st] = self.bank.lift_map.get(st) or []
         new._loaded_order = list(getattr(self.bank, '_loaded_order', []))
         new.on_state_reloaded = self._on_state_reloaded
+        new.on_chunk_appended = self._on_chunk_appended
         self.bank._replaced_by = new   # v94-fix: In-flight lazy load write-back routes to latest bank
         self.bank = new
         # v96-fix: No frame_idx/anim_elapsed reset - bank swap is now transparent
@@ -1692,6 +1706,19 @@ class PetWindow(QWidget):
             self.frame_idx = 0
             self.anim_elapsed = 0.0
         self.update()
+
+    def _on_chunk_appended(self, state, old_count, new_count):
+        """v113-fix: Frame table grew (chunk arrived) — adjust anim_elapsed to keep current frame position.
+        Problem: raw_idx = anim_elapsed / frame_ms keeps growing. When bank grows from 5→25 frames,
+        raw_idx % 25 jumps to a completely different frame than the one currently showing.
+        Fix: Reset anim_elapsed so the current frame_idx maps to the same position in the expanded table.
+        This makes the animation seamlessly continue from where it was, not jump."""
+        owner = self.bank.alias.get(state, state)
+        if self.bank.alias.get(self.state, self.state) == owner and new_count > old_count > 0:
+            _, _, frame_ms, _, _ = ANIMS.get(self.state, ANIMS['idle'])
+            # Keep current frame position: anim_elapsed = frame_idx * frame_ms
+            # Next tick will advance from here smoothly into the newly available frames
+            self.anim_elapsed = self.frame_idx * frame_ms
 
     #  --  --  --  --  -- ─ State switching  --  --  --  --  -- ─
     def set_state(self, s, duration=None):
@@ -1828,18 +1855,26 @@ class PetWindow(QWidget):
         self.anim_elapsed += dt * 1000 * frame_speed
         prefix, count, frame_ms, loop, intro = ANIMS[self.state]
         raw_idx = int(self.anim_elapsed / frame_ms)
+        # v113-fix: Clamp frame_idx to actually loaded frame count during incremental load.
+        # During lazy load, bank may have only 5/25/45 frames while ANIMS says 121.
+        # Without clamping, raw_idx % 121 jumps far beyond loaded frames → black flash + stutter.
+        # With clamping, frames loop smoothly within loaded subset, seamlessly expanding as chunks arrive.
+        _owner = self.bank.alias.get(self.state, self.state)
+        _loaded = len(self.bank.frames.get(_owner, []))
+        _avail = max(1, min(count, _loaded)) if _loaded > 0 else count
         if intro > 0 and loop:
             # Intro segment plays once, then loops main body
             if raw_idx < intro:
                 self.frame_idx = raw_idx
             else:
-                body_len = count - intro
-                body_idx = raw_idx - intro
-                # P2-fix: bath uses simple loop instead of ping-pong — ping-pong reversal
-                # caused visible flicker on foam/shake frames at the reversal point
-                self.frame_idx = intro + (body_idx % body_len)
+                body_len = _avail - intro
+                if body_len > 0:
+                    body_idx = raw_idx - intro
+                    self.frame_idx = intro + (body_idx % body_len)
+                else:
+                    self.frame_idx = raw_idx % _avail
         else:
-            self.frame_idx = raw_idx % count if loop else min(raw_idx, count - 1)
+            self.frame_idx = raw_idx % _avail if loop else min(raw_idx, _avail - 1)
 
         # Leg rig: gait phase continuous accumulation, frequency proportional to actual speed (prevents foot sliding)
         # Note: walk/run frames have built-in complete gait animation, no leg_phase needed
@@ -1949,6 +1984,16 @@ class PetWindow(QWidget):
             del self.state_duration[st]
             self.set_state('idle')
             return
+
+        # v113-fix: loop=False states (happy/roll/stretch/play_dead/pet/kiss) that finished
+        # playing all frames should return to idle immediately, even if duration hasn't expired.
+        # Old code: stuck on last frame waiting for duration = visual freeze for several seconds.
+        if st in self.state_duration:
+            _, count, frame_ms, loop, _ = ANIMS[st]
+            if not loop and self.frame_idx >= count - 1:
+                del self.state_duration[st]
+                self.set_state('idle')
+                return
 
         if self.dragging:
             return
