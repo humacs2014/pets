@@ -733,7 +733,11 @@ class SpriteBank:
         """v112: Append incremental chunk to frame table — animation grows without reset.
         Lift values are body_bottoms (ints); final lift (0..1 float) set in _on_lazy_done after all frames arrive.
         During loading, lift_map holds body_bottoms — _state_draw uses lift_map only for run gallop,
-        temporary int values cause no visual glitch (idle/walk/etc have var<30 → lift=0.0)."""
+        temporary int values cause no visual glitch (idle/walk/etc have var<30 → lift=0.0).
+        v118: Skip if this bank was cancelled (replaced by zoom/fullbank swap). Old _StateLoadThread
+        may still emit chunks at the old draw_size — appending them would mix frame sizes → jitter."""
+        if getattr(self, '_cancelled', False):
+            return
         bank = self
         while getattr(bank, '_replaced_by', None) is not None:
             bank = bank._replaced_by
@@ -761,6 +765,9 @@ class SpriteBank:
 
     def _on_lazy_done(self, state, t):
         self._lazy_threads.pop(state, None)
+        # v118: Skip if bank was cancelled (zoom/fullbank swap replaced it)
+        if getattr(self, '_cancelled', False):
+            return
         # v112: Incremental mode — frames already appended via _on_chunk_ready.
         # Recalculate lift_map from collected body_bottoms → proper 0..1 floats.
         bank = self
@@ -1715,6 +1722,7 @@ class PetWindow(QWidget):
             old.pixmaps.clear()
             old.pixmaps_m.clear()
             old._replaced_by = new   # v94-fix: In-flight lazy load write-back routes to latest bank
+            old._cancelled = True    # v118: reject stale chunks from this old bank
             self.bank = new
             self.bank.on_state_reloaded = self._on_state_reloaded
             self.bank.on_chunk_appended = self._on_chunk_appended
@@ -1750,6 +1758,7 @@ class PetWindow(QWidget):
         self.bank.pixmaps.clear()
         self.bank.pixmaps_m.clear()
         self.bank._replaced_by = new   # v94-fix: In-flight lazy load write-back routes to latest bank
+        self.bank._cancelled = True    # v118: reject stale chunks from this old bank
         self.bank = new
         # v96-fix: No frame_idx/anim_elapsed reset - bank swap is now transparent
         # (fast_boot loads full 121 frames, swap replaces with identical data)
@@ -2478,7 +2487,8 @@ class PetWindow(QWidget):
         k = DRAW_SIZE / _draw
         _iw, _ih = pm.width(), pm.height()
         draw_rect = QRectF(-_iw * k / 2, -_ih * k + GROUND_PAD, _iw * k, _ih * k)
-        #  --  Leg rig rendering (Paper-Doll Rig): real walking swing  -- 
+
+        #  --  Leg rig rendering (Paper-Doll Rig): real walking swing  --
         # v19: Source legs frozen, runtime splits sprite into rear-leg -> body -> front-leg three layers,
         # pendulum swing around hip joint produces real gait. rig is per-frame list (follows frame_idx).
         rig_list = (self.bank.rig_parts_m if self.flipped
